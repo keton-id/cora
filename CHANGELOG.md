@@ -8,6 +8,16 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.2.0-alpha.1](https://github.com/keton-id/cora/compare/v0.1.3-alpha.1...v0.2.0-alpha.1) (2026-05-26)
+
+
+### Features
+
+* **identity:** add Windows caller verification stub ([1be670a](https://github.com/keton-id/cora/commit/1be670a1ed928f5b5dc1f81eea42eda6ccb993a8))
+* **windows:** gate POSIX-only paths for Windows cross-compile ([635f54c](https://github.com/keton-id/cora/commit/635f54c4478c0ccb5a505590af48f54e67b0e857))
+* **windows:** Tier 1 preview support ([f32345e](https://github.com/keton-id/cora/commit/f32345ecf1cf0a686de63fe5328d244fdabafb9e))
+* **windows:** wire AF_UNIX IPC and stub caller identity ([2b0757d](https://github.com/keton-id/cora/commit/2b0757d1b39a22235abcef58fd42b9ea883154af))
+
 ## [0.1.3-alpha.1](https://github.com/keton-id/cora/compare/v0.1.2-alpha.1...v0.1.3-alpha.1) (2026-05-26)
 
 
