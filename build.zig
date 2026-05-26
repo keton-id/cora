@@ -16,6 +16,7 @@ pub fn build(b: *std.Build) void {
     const core_mod = b.addModule("cora", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .link_libc = true,
     });
 
     const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
@@ -27,6 +28,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "cora", .module = core_mod },
                 .{ .name = "vaxis", .module = vaxis_mod },
