@@ -28,9 +28,8 @@ pub fn lookupByPid(pid: i32) CoraError!CallerIdentity {
 
 fn fillPath(pid: i32, ident: *CallerIdentity) CoraError!void {
     var link_buf: [64]u8 = undefined;
-    const link = std.fmt.bufPrint(&link_buf, "/proc/{d}/exe", .{pid}) catch return CoraError.CallerNotAllowed;
-    var out: [max_path_len]u8 = undefined;
-    const path = std.fs.readLinkAbsolute(link, &out) catch return CoraError.CallerNotAllowed;
-    @memcpy(ident.binary_path_buf[0..path.len], path);
-    ident.binary_path_len = path.len;
+    const link = std.fmt.bufPrintZ(&link_buf, "/proc/{d}/exe", .{pid}) catch return CoraError.CallerNotAllowed;
+    const n = std.c.readlink(link.ptr, &ident.binary_path_buf, ident.binary_path_buf.len);
+    if (n <= 0) return CoraError.CallerNotAllowed;
+    ident.binary_path_len = @intCast(n);
 }
