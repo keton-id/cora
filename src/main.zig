@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const cora = @import("cora");
 const tui_menu = @import("tui/menu.zig");
@@ -176,24 +177,30 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     defer cora.policy.free(allocator, &pol);
 
     if (!foreground) {
-        const pid = std.c.fork();
-        if (pid < 0) {
-            std.debug.print("fork failed\n", .{});
-            std.process.exit(1);
-        }
-        if (pid != 0) {
-            std.debug.print("service started (pid {d}) at {s}\n", .{ pid, sock_path });
-            std.process.exit(0);
-        }
-        _ = std.c.setsid();
-        // Detach inherited std fds so parent pipes/terminals can close.
-        const o: std.c.O = .{ .ACCMODE = .RDWR };
-        const devnull_fd = std.c.open("/dev/null", o);
-        if (devnull_fd >= 0) {
-            _ = std.c.dup2(devnull_fd, std.posix.STDIN_FILENO);
-            _ = std.c.dup2(devnull_fd, std.posix.STDOUT_FILENO);
-            _ = std.c.dup2(devnull_fd, std.posix.STDERR_FILENO);
-            if (devnull_fd > std.posix.STDERR_FILENO) _ = std.c.close(devnull_fd);
+        if (builtin.os.tag == .windows) {
+            // TODO(windows): daemonize via CreateProcessW with DETACHED_PROCESS.
+            // For Tier 1 preview, run foreground and warn.
+            std.debug.print("warning: background mode not yet supported on windows, running foreground\n", .{});
+        } else {
+            const pid = std.c.fork();
+            if (pid < 0) {
+                std.debug.print("fork failed\n", .{});
+                std.process.exit(1);
+            }
+            if (pid != 0) {
+                std.debug.print("service started (pid {d}) at {s}\n", .{ pid, sock_path });
+                std.process.exit(0);
+            }
+            _ = std.c.setsid();
+            // Detach inherited std fds so parent pipes/terminals can close.
+            const o: std.c.O = .{ .ACCMODE = .RDWR };
+            const devnull_fd = std.c.open("/dev/null", o);
+            if (devnull_fd >= 0) {
+                _ = std.c.dup2(devnull_fd, std.posix.STDIN_FILENO);
+                _ = std.c.dup2(devnull_fd, std.posix.STDOUT_FILENO);
+                _ = std.c.dup2(devnull_fd, std.posix.STDERR_FILENO);
+                if (devnull_fd > std.posix.STDERR_FILENO) _ = std.c.close(devnull_fd);
+            }
         }
     }
 
@@ -584,12 +591,29 @@ fn fileExists(io: Io, dir: Io.Dir, path: []const u8) bool {
     return true;
 }
 
+/// Read one byte from stdin. Cross-platform: POSIX read on Unix,
+/// ReadFile on Windows (std.posix.read errors with "unsupported OS"
+/// when targeting windows even with a HANDLE).
+extern "kernel32" fn ReadFile(hFile: *anyopaque, lpBuffer: *anyopaque, nNumberOfBytesToRead: u32, lpNumberOfBytesRead: *u32, lpOverlapped: ?*anyopaque) callconv(.winapi) i32;
+
+fn stdinReadByte(out: *[1]u8) !usize {
+    if (builtin.os.tag == .windows) {
+        const h = Io.File.stdin().handle;
+        var got: u32 = 0;
+        const ok = ReadFile(@ptrCast(h), out, 1, &got, null);
+        if (ok == 0) return error.ReadFailed;
+        return @intCast(got);
+    } else {
+        return std.posix.read(std.posix.STDIN_FILENO, out);
+    }
+}
+
 fn readLine(prompt: []const u8, buf: []u8) ![]const u8 {
     std.debug.print("{s}", .{prompt});
     var len: usize = 0;
     while (len < buf.len) {
         var one: [1]u8 = undefined;
-        const n = try std.posix.read(std.posix.STDIN_FILENO, &one);
+        const n = try stdinReadByte(&one);
         if (n == 0) break;
         if (one[0] == '\n') break;
         if (one[0] == '\r') continue;

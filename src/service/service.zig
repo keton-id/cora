@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const net = Io.net;
 const MemStore = @import("../store/mem.zig").MemStore;
@@ -10,13 +11,32 @@ const policy_mod = @import("../policy/policy.zig");
 const audit = @import("../audit.zig");
 const CoraError = @import("../error.zig").CoraError;
 
+extern "kernel32" fn GetProcessId(Process: *anyopaque) callconv(.winapi) u32;
+
+fn childPid(child: anytype) i32 {
+    if (child.id) |id| {
+        if (builtin.os.tag == .windows) return @intCast(GetProcessId(@ptrCast(id)));
+        return @intCast(id);
+    }
+    return 0;
+}
+
 fn nowMs(io: Io) i64 {
     return Io.Timestamp.now(io, .real).toMilliseconds();
 }
 
 pub const default_socket_format = "/tmp/cora-{d}.sock";
+pub const windows_pipe_format = "\\\\.\\pipe\\cora-{d}";
+
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
 
 pub fn defaultSocketPath(buf: []u8) ![]u8 {
+    if (builtin.os.tag == .windows) {
+        // Tier 1 preview: per-process pipe name keyed on PID. Tier 2 will
+        // bind this to the user SID via GetUserNameW + LookupAccountNameW.
+        const id: u64 = @intCast(GetCurrentProcessId());
+        return std.fmt.bufPrint(buf, windows_pipe_format, .{id});
+    }
     const uid: u64 = @intCast(std.c.getuid());
     return std.fmt.bufPrint(buf, default_socket_format, .{uid});
 }
@@ -223,7 +243,7 @@ pub const Service = struct {
             .argv = parsed.argv,
             .environ_map = &env_map,
         });
-        const child_pid: i32 = if (child.id) |id| @intCast(id) else 0;
+        const child_pid: i32 = childPid(child);
 
         for (task.allowed_secrets) |name| {
             self.emit(.{ .secret_injected = .{
