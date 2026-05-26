@@ -120,8 +120,26 @@ Requires Zig 0.16+.
 
 ```bash
 git clone https://github.com/keton-id/cora && cd cora
-zig build -Doptimize=ReleaseFast
-sudo cp zig-out/bin/cr /usr/local/bin/
+```
+
+Native Zig workflow:
+
+```bash
+zig build -Doptimize=ReleaseSafe
+sudo install -m 0755 zig-out/bin/cr /usr/local/bin/cr
+```
+
+Convenience wrapper via `make`:
+
+```bash
+make release
+make install                      # installs to ~/.local/bin by default
+```
+
+Install to another prefix:
+
+```bash
+make install PREFIX=/usr/local
 ```
 
 ---
@@ -212,7 +230,7 @@ Run `cr` with no args for full usage.
 | Agent gets value? | **Never**           | Yes        | Depends |
 | Infra required    | **None**            | None       | Heavy   |
 | Single binary     | **Yes**             | N/A        | No      |
-| Interactive TUI   | **Yes (ANSI menu)** | No         | No      |
+| Interactive TUI   | **Yes (pane-based)** | No         | No      |
 
 ---
 
