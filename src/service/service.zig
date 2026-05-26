@@ -26,19 +26,42 @@ fn nowMs(io: Io) i64 {
 }
 
 pub const default_socket_format = "/tmp/cora-{d}.sock";
-pub const windows_pipe_format = "\\\\.\\pipe\\cora-{d}";
 
 extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: u32) callconv(.winapi) u32;
+extern "kernel32" fn CreateDirectoryW(lpPathName: [*:0]const u16, lpSecurityAttributes: ?*anyopaque) callconv(.winapi) i32;
 
+/// Resolve the AF_UNIX socket path used by `cr unlock` and clients.
+/// POSIX: `/tmp/cora-<uid>.sock`.
+/// Windows: `%LOCALAPPDATA%\cora\cora.sock`. AF_UNIX is supported on
+/// Windows 10 1803+. Peer PID is not exposed on Windows AF_UNIX sockets,
+/// so Tier 1 trusts the user-only NTFS ACL inherited from %LOCALAPPDATA%.
 pub fn defaultSocketPath(buf: []u8) ![]u8 {
     if (builtin.os.tag == .windows) {
-        // Tier 1 preview: per-process pipe name keyed on PID. Tier 2 will
-        // bind this to the user SID via GetUserNameW + LookupAccountNameW.
-        const id: u64 = @intCast(GetCurrentProcessId());
-        return std.fmt.bufPrint(buf, windows_pipe_format, .{id});
+        const name = std.unicode.utf8ToUtf16LeStringLiteral("LOCALAPPDATA");
+        var wide: [260]u16 = undefined;
+        const n = GetEnvironmentVariableW(name, &wide, wide.len);
+        if (n == 0 or n >= wide.len) return error.NoLocalAppData;
+        var tmp: [520]u8 = undefined;
+        const m = try std.unicode.utf16LeToUtf8(&tmp, wide[0..n]);
+        return std.fmt.bufPrint(buf, "{s}\\cora\\cora.sock", .{tmp[0..m]});
     }
     const uid: u64 = @intCast(std.c.getuid());
     return std.fmt.bufPrint(buf, default_socket_format, .{uid});
+}
+
+/// Ensure the parent directory of `socket_path` exists on Windows.
+/// AF_UNIX bind fails if `%LOCALAPPDATA%\cora` is missing. No-op on POSIX
+/// (we use /tmp which always exists).
+fn ensureParentDir(path: []const u8) void {
+    if (builtin.os.tag != .windows) return;
+    const sep = std.mem.lastIndexOfScalar(u8, path, '\\') orelse return;
+    const dir = path[0..sep];
+    var wide_buf: [520]u16 = undefined;
+    const n = std.unicode.utf8ToUtf16Le(&wide_buf, dir) catch return;
+    if (n >= wide_buf.len) return;
+    wide_buf[n] = 0;
+    _ = CreateDirectoryW(@ptrCast(&wide_buf), null);
 }
 
 pub const Config = struct {
@@ -61,6 +84,7 @@ pub const Service = struct {
     audit_logger: ?*audit.Logger,
 
     pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
+        ensureParentDir(cfg.socket_path);
         removeSocketIfStale(io, cfg.socket_path);
         const ua = try net.UnixAddress.init(cfg.socket_path);
         const server = try ua.listen(io, .{});
@@ -297,8 +321,12 @@ fn removeSocketIfStale(io: Io, path: []const u8) void {
 }
 
 test "defaultSocketPath builds path" {
-    var buf: [128]u8 = undefined;
+    var buf: [520]u8 = undefined;
     const p = try defaultSocketPath(&buf);
-    try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
-    try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
+    if (builtin.os.tag == .windows) {
+        try std.testing.expect(std.mem.endsWith(u8, p, "\\cora\\cora.sock"));
+    } else {
+        try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
+        try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
+    }
 }
