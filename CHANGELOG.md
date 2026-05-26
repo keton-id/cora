@@ -8,6 +8,14 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.3.0-alpha.1](https://github.com/keton-id/cora/compare/v0.2.0-alpha.1...v0.3.0-alpha.1) (2026-05-26)
+
+
+### Features
+
+* modernize `cr tui` with pane-based vaxis UI ([a379ab6](https://github.com/keton-id/cora/commit/a379ab68ca0d6ab65f95607e6db19d655a1c1066))
+* **tui:** refactor & pane-based vaxis interface ([351ef02](https://github.com/keton-id/cora/commit/351ef02938d3d381453a706b06b9165627e9d241))
+
 ## [0.2.0-alpha.1](https://github.com/keton-id/cora/compare/v0.1.3-alpha.1...v0.2.0-alpha.1) (2026-05-26)
 
 

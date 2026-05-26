@@ -1,6 +1,6 @@
 .{
     .name = .cora,
-    .version = "0.2.0-alpha.1", // x-release-please-version
+    .version = "0.3.0-alpha.1", // x-release-please-version
     .fingerprint = 0x6ce04156813d2e93,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
