@@ -62,7 +62,7 @@ Flags:
 ```bash
 # Pin a specific tag
 curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
-    | sh -s -- --version v0.1.0-alpha.1
+    | sh -s -- --version {{VERSION}}
 
 # Track a prerelease channel
 curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \

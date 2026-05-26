@@ -19,6 +19,7 @@ pub fn verify(fd: std.posix.fd_t) CoraError!CallerIdentity {
     return switch (builtin.os.tag) {
         .linux => @import("linux.zig").verify(fd),
         .macos, .ios, .tvos, .watchos, .visionos => @import("macos.zig").verify(fd),
+        .windows => @import("windows.zig").verify(fd),
         else => CoraError.InvalidConfig,
     };
 }
@@ -27,6 +28,7 @@ pub fn lookupByPid(pid: i32) CoraError!CallerIdentity {
     return switch (builtin.os.tag) {
         .linux => @import("linux.zig").lookupByPid(pid),
         .macos, .ios, .tvos, .watchos, .visionos => @import("macos.zig").lookupByPid(pid),
+        .windows => @import("windows.zig").lookupByPid(pid),
         else => CoraError.InvalidConfig,
     };
 }
@@ -40,6 +42,7 @@ test "CallerIdentity path slice" {
 }
 
 test "lookupByPid finds own binary" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const my_pid: i32 = @intCast(std.c.getpid());
     const ident = try lookupByPid(my_pid);
     try std.testing.expect(ident.binary_path_len > 0);
