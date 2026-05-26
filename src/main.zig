@@ -19,10 +19,12 @@ pub fn main(init: std.process.Init) !void {
 
     const sub = args[1];
     if (std.mem.eql(u8, sub, "version")) {
-        std.debug.print("cr {s} (commit {s}, built {s})\n", .{
+        const tag = if (builtin.os.tag == .windows) " [windows-preview]" else "";
+        std.debug.print("cr {s} (commit {s}, built {s}){s}\n", .{
             build_options.version,
             build_options.commit,
             build_options.build_date,
+            tag,
         });
         return;
     }
