@@ -29,6 +29,10 @@ jobs:
             runner: ubuntu-latest
           - target: aarch64-linux
             runner: ubuntu-latest
+          - target: x86_64-windows-gnu
+            runner: ubuntu-latest
+          - target: aarch64-windows-gnu
+            runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -49,8 +53,19 @@ jobs:
             TAG="${{ inputs.release_tag }}"
           fi
           VERSION="${TAG#v}"
-          ARTIFACT="cr-${VERSION}-${{ matrix.target }}.tar.gz"
-          tar -C zig-out/bin -czf "${ARTIFACT}" cr
+          TARGET="${{ matrix.target }}"
+          case "${TARGET}" in
+            *-windows*)
+              # Tier 1 Windows preview: ship as .zip, append -preview tag.
+              TRIPLE="${TARGET%-gnu}"
+              ARTIFACT="cr-${VERSION}-${TRIPLE}-preview.zip"
+              (cd zig-out/bin && zip -q "${GITHUB_WORKSPACE}/${ARTIFACT}" cr.exe)
+              ;;
+            *)
+              ARTIFACT="cr-${VERSION}-${TARGET}.tar.gz"
+              tar -C zig-out/bin -czf "${ARTIFACT}" cr
+              ;;
+          esac
           shasum -a 256 "${ARTIFACT}" | awk '{print $1}' > "${ARTIFACT}.sha256"
           echo "ARTIFACT=${ARTIFACT}" >> "$GITHUB_ENV"
 
@@ -89,7 +104,10 @@ jobs:
 
       - name: Compute combined SHA256SUMS
         working-directory: dist
-        run: shasum -a 256 *.tar.gz > SHA256SUMS
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          shasum -a 256 *.tar.gz *.zip > SHA256SUMS
 
       - name: Determine prerelease
         id: prerelease
@@ -114,10 +132,10 @@ jobs:
           PRERELEASE: ${{ steps.prerelease.outputs.value }}
         run: |
           set -euo pipefail
+          shopt -s nullglob
+          assets=( dist/*.tar.gz dist/*.tar.gz.sha256 dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS )
           gh release upload "$TAG" \
-            dist/*.tar.gz \
-            dist/*.tar.gz.sha256 \
-            dist/SHA256SUMS \
+            "${assets[@]}" \
             --clobber \
             --repo "$GITHUB_REPOSITORY"
 

@@ -1,7 +1,22 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const cora = @import("cora");
 const vaxis = @import("vaxis");
+
+extern "kernel32" fn ReadFile(hFile: *anyopaque, lpBuffer: *anyopaque, nNumberOfBytesToRead: u32, lpNumberOfBytesRead: *u32, lpOverlapped: ?*anyopaque) callconv(.winapi) i32;
+
+fn stdinReadByte(out: *[1]u8) !usize {
+    if (builtin.os.tag == .windows) {
+        const h = Io.File.stdin().handle;
+        var got: u32 = 0;
+        const ok = ReadFile(@ptrCast(h), out, 1, &got, null);
+        if (ok == 0) return error.ReadFailed;
+        return @intCast(got);
+    } else {
+        return std.posix.read(std.posix.STDIN_FILENO, out);
+    }
+}
 
 const esc_clear = "\x1b[2J\x1b[H";
 const esc_bold = "\x1b[1m";
@@ -70,7 +85,7 @@ fn readChoice() ?Action {
     var len: usize = 0;
     while (len < buf.len) {
         var one: [1]u8 = undefined;
-        const n = std.posix.read(std.posix.STDIN_FILENO, &one) catch return null;
+        const n = stdinReadByte(&one) catch return null;
         if (n == 0) return .quit;
         if (one[0] == '\n') break;
         if (one[0] == '\r') continue;
@@ -137,7 +152,7 @@ fn showSecretsList(allocator: std.mem.Allocator, io: Io) !void {
     var pass_len: usize = 0;
     while (pass_len < pass_buf.len) {
         var one: [1]u8 = undefined;
-        const n = std.posix.read(std.posix.STDIN_FILENO, &one) catch break;
+        const n = stdinReadByte(&one) catch break;
         if (n == 0 or one[0] == '\n') break;
         if (one[0] == '\r') continue;
         pass_buf[pass_len] = one[0];
@@ -176,7 +191,7 @@ fn pause() !void {
     std.debug.print("\n{s}[enter to continue]{s} ", .{ esc_dim, esc_reset });
     var one: [1]u8 = undefined;
     while (true) {
-        const n = std.posix.read(std.posix.STDIN_FILENO, &one) catch return;
+        const n = stdinReadByte(&one) catch return;
         if (n == 0 or one[0] == '\n') return;
     }
 }

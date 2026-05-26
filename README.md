@@ -7,7 +7,7 @@
 Your agent never holds secret values. Not in memory. Not on disk. Not ever.
 One encrypted file. One passphrase. Carry it anywhere.
 
-> **Status:** Pre-alpha · macOS + Linux · Windows pending · AGPL-3.0
+> **Status:** Pre-alpha · macOS + Linux · Windows (preview, Tier 1) · AGPL-3.0
 > Built against Zig 0.16. Build from source until v0.1 binary release cuts.
 
 ---
@@ -62,7 +62,7 @@ Flags:
 ```bash
 # Pin a specific tag
 curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
-    | sh -s -- --version v0.1.0-alpha.1
+    | sh -s -- --version {{VERSION}}
 
 # Track a prerelease channel
 curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
@@ -84,6 +84,35 @@ shasum -a 256 -c <(echo "$(cat cr-${VERSION}-${TARGET}.tar.gz.sha256)  cr-${VERS
 tar xzf "cr-${VERSION}-${TARGET}.tar.gz"
 sudo install -m 0755 cr /usr/local/bin/
 ```
+
+### Windows (preview)
+
+Windows builds ship as `cr-<version>-<arch>-windows-preview.zip` from the
+[Releases page](https://github.com/keton-id/cora/releases). Extract `cr.exe`
+somewhere on `PATH`.
+
+```powershell
+$VERSION = "0.1.3-alpha.1"
+$TARGET  = "x86_64-windows"   # or aarch64-windows
+Invoke-WebRequest "https://github.com/keton-id/cora/releases/download/v$VERSION/cr-$VERSION-$TARGET-preview.zip" -OutFile cr.zip
+Expand-Archive cr.zip -DestinationPath $Env:LOCALAPPDATA\cora\bin
+$Env:PATH += ";$Env:LOCALAPPDATA\cora\bin"
+cr version
+```
+
+**Windows preview limitations (Tier 1):**
+
+- Caller identity is **not** kernel-verified. AF_UNIX on Windows does not
+  expose peer PID; the service trusts the user-only NTFS ACL inherited from
+  `%LOCALAPPDATA%\cora\`. Do **not** run `cr` on a shared Windows machine
+  with untrusted local users until Tier 2.
+- `cr unlock` runs **foreground only**. Background daemonize via
+  `CreateProcessW(DETACHED_PROCESS)` is not yet wired.
+- Socket path is `%LOCALAPPDATA%\cora\cora.sock`. The directory is created
+  on first `cr unlock`.
+
+Tier 2 (post-1.0) will add Named Pipe IPC, explicit DACL hardening on
+`cora.zon`, and Authenticode-based caller verification.
 
 ### C. Build from source
 
