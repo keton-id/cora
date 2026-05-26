@@ -1,0 +1,90 @@
+name: 🐛 Bug report
+description: Something in `cr` is broken or behaves incorrectly.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! Please do **not** include any real secret
+        values (`ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, etc.) in this report,
+        even in screenshots or logs.
+
+        If you have found a **security vulnerability**, do not open this
+        form — use [GitHub Security Advisories](https://github.com/keton-id/cora/security/advisories/new)
+        instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: "`cr version` output"
+      description: Full output of `cr version` (binary, commit hash, build date).
+      placeholder: "cr 0.1.0-alpha.1 (commit abcdef123456, built 2026-05-26T06:50:48Z)"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS + arch
+      description: Output of `uname -a` (or equivalent).
+      placeholder: "Darwin host 25.4.0 arm64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal commands or scenario that triggers the bug. Use a fresh
+        directory and a throwaway `cora.zon` if possible.
+      placeholder: |
+        1. `cr init` in /tmp/foo
+        2. `cr secrets set FOO`
+        3. `cr unlock`
+        4. `cr exec my-task -- echo $FOO`
+        ...
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: |
+        What actually happened. Include error messages, exit codes, and
+        relevant lines from `~/.cora/audit.jsonl` (redact any sensitive
+        values — secret *names* are fine).
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Stack traces, screenshots, related links, suspected cause, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I am running the latest released version (or `main`).
+          required: true
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I did not include any real secret values in this report.
+          required: true

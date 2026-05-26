@@ -1,0 +1,19 @@
+.{
+    .name = .cora,
+    .version = "0.1.0-alpha.1", // x-release-please-version
+    .fingerprint = 0x6ce04156813d2e93,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .vaxis = .{
+            .url = "https://github.com/rockorager/libvaxis/archive/main.tar.gz",
+            .hash = "vaxis-0.6.0-BWNV_HHwCQB451KS7A8SMykALblPmGwHnzSfiJHjN3_9",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+        "README.md",
+    },
+}

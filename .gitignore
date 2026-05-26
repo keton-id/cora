@@ -1,0 +1,23 @@
+.DS_Store
+
+# Zig build artifacts
+.zig-cache/
+zig-cache/
+zig-out/
+zig-pkg/
+
+# Cora runtime files — encrypted but still local
+cora.zon
+*.cora.zon
+audit.jsonl
+cora-test
+
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS junk
+Thumbs.db

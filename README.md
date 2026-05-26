@@ -1,0 +1,204 @@
+# cora 🤫
+
+> *"He never let anyone hear his true voice."*
+
+**Zero-knowledge secret injection for AI agents. Written in Zig.**
+
+Your agent never holds secret values. Not in memory. Not on disk. Not ever.
+One encrypted file. One passphrase. Carry it anywhere.
+
+> **Status:** Pre-alpha · macOS + Linux · Windows pending · AGPL-3.0
+> Built against Zig 0.16. Build from source until v0.1 binary release cuts.
+
+---
+
+## The Problem
+
+Every AI agent runtime today has the same flaw:
+
+```bash
+ANTHROPIC_API_KEY=sk-ant-... claude -p "summarize this repo"
+```
+
+Your agent now has `sk-ant-...` in its environment. Every skill can read it.
+Every prompt injection can ask for it. Every malicious plugin can exfiltrate it.
+
+---
+
+## The Fix
+
+```bash
+cr unlock                                       # enter passphrase — service starts
+cr exec claude-task -- claude -p "summarize this repo"
+```
+
+Claude spawns. It needs `ANTHROPIC_API_KEY`. The Cora service injects it
+directly into the subprocess environment after verifying the caller binary
+at the **kernel level**.
+
+The `cr` client process never reads the value. The Claude subprocess uses it
+and exits. Memory zeroed.
+
+Prompt injection tries `"print ANTHROPIC_API_KEY"` against the orchestrating
+agent — nothing to print. The value was never in that process.
+
+---
+
+## Install
+
+Three options. Pick whichever fits your trust model.
+
+### A. Pre-built binary via install script (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh | sh
+```
+
+Fetches the latest stable release for your OS/arch, verifies the SHA256
+checksum, and installs to `/usr/local/bin` (or `~/.local/bin` without sudo).
+
+Flags:
+
+```bash
+# Pin a specific tag
+curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
+    | sh -s -- --version v0.1.0-alpha.1
+
+# Track a prerelease channel
+curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
+    | sh -s -- --channel alpha
+```
+
+### B. Manual download from GitHub Releases
+
+Grab the tarball for your platform from the
+[Releases page](https://github.com/keton-id/cora/releases) and verify the
+checksum yourself:
+
+```bash
+VERSION=0.1.0-alpha.1
+TARGET=aarch64-macos        # or x86_64-macos / x86_64-linux / aarch64-linux
+curl -fsSLO "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-${TARGET}.tar.gz"
+curl -fsSLO "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-${TARGET}.tar.gz.sha256"
+shasum -a 256 -c <(echo "$(cat cr-${VERSION}-${TARGET}.tar.gz.sha256)  cr-${VERSION}-${TARGET}.tar.gz")
+tar xzf "cr-${VERSION}-${TARGET}.tar.gz"
+sudo install -m 0755 cr /usr/local/bin/
+```
+
+### C. Build from source
+
+Requires Zig 0.16+.
+
+```bash
+git clone https://github.com/keton-id/cora && cd cora
+zig build -Doptimize=ReleaseFast
+sudo cp zig-out/bin/cr /usr/local/bin/
+```
+
+---
+
+## Quick Start (with Claude Code)
+
+```bash
+# First-time setup
+cr init                                   # passphrase prompt + confirm
+cr secrets set ANTHROPIC_API_KEY          # paste real key
+cr policy allow $(which cr)               # cr itself is the IPC client
+cr policy allow $(which claude)           # the agent we'll spawn
+cr policy task add claude-task ANTHROPIC_API_KEY
+
+# Use it
+cr unlock                                 # decrypt + start background service
+cr exec claude-task -- claude -p "say hi"
+cr audit tail                             # see what happened
+cr lock                                   # zero memory, stop service
+```
+
+The `claude` subprocess sees `$ANTHROPIC_API_KEY`. The orchestrating `cr exec`
+process only gets back `child pid <N> exit <code>`.
+
+Verify by grepping for the value in any state Cora touches:
+
+```bash
+grep -a 'sk-ant-' cora.zon               # → no hits (encrypted)
+grep -a 'sk-ant-' ~/.cora/audit.jsonl    # → no hits (names only)
+```
+
+---
+
+## How It Works
+
+```
+cora.zon (always encrypted on disk — XChaCha20-Poly1305)
+    ↓ cr unlock (Argon2id passphrase → key → decrypt → key zeroed)
+Service memory (secrets live here while unlocked)
+    ↓ cr exec
+Subprocess env (secret injected directly, agent never touches it)
+    ↓ task done
+secureZero — temporary copy zeroed immediately
+    ↓ cr lock
+All memory zeroed. Back to encrypted at rest.
+```
+
+---
+
+## Portable
+
+`cora.zon` is one file. Take it to any machine, container, or CI/CD environment.
+No OS keychain dependency. No cloud. No sync service.
+
+```bash
+scp cora.zon user@server:~/
+# cr unlock on server — same passphrase, same secrets
+```
+
+---
+
+## What's Inside
+
+| Feature                | Command                                  |
+| ---------------------- | ---------------------------------------- |
+| Encrypted file at rest | `cr init`                                |
+| Manage secrets         | `cr secrets set\|list\|delete`           |
+| Caller allowlist       | `cr policy allow\|deny PATH`             |
+| Task scoping           | `cr policy task add NAME SECRETS...`     |
+| Service lifecycle      | `cr unlock` / `cr lock` / `cr status`    |
+| Spawn agent            | `cr exec TASK -- argv...`                |
+| Audit trail            | `cr audit tail` / `cr audit show`        |
+| Interactive menu       | `cr tui`                                 |
+| Identity debug         | `cr verify --pid PID`                    |
+
+Run `cr` with no args for full usage.
+
+---
+
+## How It's Different
+
+|                   | cora                | .env files | Vault   |
+| ----------------- | ------------------- | ---------- | ------- |
+| Storage           | **Encrypted file**  | Plaintext  | Cloud   |
+| Portable          | **Yes — one file**  | Partial    | No      |
+| Memory zeroing    | **`secureZero`**    | GC         | N/A     |
+| Caller verified   | **OS kernel**       | Nothing    | Nothing |
+| Agent gets value? | **Never**           | Yes        | Depends |
+| Infra required    | **None**            | None       | Heavy   |
+| Single binary     | **Yes**             | N/A        | No      |
+| Interactive TUI   | **Yes (ANSI menu)** | No         | No      |
+
+---
+
+## License
+
+AGPL-3.0 — free to use, modify, and distribute.
+If you build on Cora, your code stays open too.
+
+---
+
+## Security
+
+Read [SECURITY.md](SECURITY.md) for the threat model, known residuals, and
+responsible disclosure (via GitHub Security Advisories).
+
+---
+
+*Named after Donquixote Rosinante — who hid everything to protect what mattered.*

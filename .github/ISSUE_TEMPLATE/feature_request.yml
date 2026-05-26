@@ -1,0 +1,77 @@
+name: ✨ Feature request
+description: Suggest a new capability or improvement to `cr`.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: review the **non-goals** in
+        [CLAUDE.md](https://github.com/keton-id/cora/blob/main/CLAUDE.md)
+        and [SECURITY.md](https://github.com/keton-id/cora/blob/main/SECURITY.md).
+        Features that contradict the core guarantee (e.g. MCP server,
+        cloud sync, returning secret values to the calling agent) will be
+        closed.
+
+        For broader design conversation, prefer
+        [Discussions](https://github.com/keton-id/cora/discussions) first.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the user-facing pain. Frame it as a user story when
+        possible: "As an X, I want Y so that Z."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        How would the feature look from a user's perspective — new CLI
+        flag, new subcommand, new policy field, new screen in the TUI?
+        Sketch the command and expected output if you can.
+      render: bash
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Other approaches you thought about, or existing tools / patterns
+        that almost solve this. Helps reviewers avoid retreading ground.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Surface area
+      description: Which part of Cora would this touch?
+      multiple: true
+      options:
+        - CLI / UX
+        - TUI (vaxis)
+        - Crypto / file format
+        - Service / IPC protocol
+        - Policy / identity verification
+        - Audit log
+        - Build / packaging / release
+        - Docs
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I read CLAUDE.md and SECURITY.md and this does not contradict a stated non-goal.
+          required: true
+        - label: I searched existing issues / discussions and did not find a duplicate.
+          required: true

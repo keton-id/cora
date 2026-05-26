@@ -1,0 +1,17 @@
+pub const CoraError = error{
+    AuthFailed,
+    ServiceNotRunning,
+    ServiceAlreadyRunning,
+    NoActiveTask,
+    SecretNotAllowedForTask,
+    CallerNotAllowed,
+    InvalidConfig,
+    InvalidPassphrase,
+    PassphraseTooShort,
+    SecretTooLarge,
+    SecretNotFound,
+    StoreFull,
+    TamperDetected,
+    UnsupportedVersion,
+    Io,
+};

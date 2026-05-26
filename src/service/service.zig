@@ -1,0 +1,284 @@
+const std = @import("std");
+const Io = std.Io;
+const net = Io.net;
+const MemStore = @import("../store/mem.zig").MemStore;
+const SecretBuf = @import("../crypto/secret_buf.zig").SecretBuf;
+const idle_mod = @import("idle.zig");
+const proto = @import("proto.zig");
+const identity = @import("../identity/identity.zig");
+const policy_mod = @import("../policy/policy.zig");
+const audit = @import("../audit.zig");
+const CoraError = @import("../error.zig").CoraError;
+
+fn nowMs(io: Io) i64 {
+    return Io.Timestamp.now(io, .real).toMilliseconds();
+}
+
+pub const default_socket_format = "/tmp/cora-{d}.sock";
+
+pub fn defaultSocketPath(buf: []u8) ![]u8 {
+    const uid: u64 = @intCast(std.c.getuid());
+    return std.fmt.bufPrint(buf, default_socket_format, .{uid});
+}
+
+pub const Config = struct {
+    socket_path: []const u8,
+    idle_timeout_ms: i64 = 15 * 60 * 1000,
+    policy: policy_mod.Policy = .{},
+    audit_logger: ?*audit.Logger = null,
+};
+
+pub const Service = struct {
+    allocator: std.mem.Allocator,
+    io: Io,
+    secrets: *MemStore,
+    timer: idle_mod.IdleTimer,
+    server: net.Server,
+    socket_path: []const u8,
+    shutdown: std.atomic.Value(bool),
+    policy: policy_mod.Policy,
+    rejected: std.atomic.Value(u32),
+    audit_logger: ?*audit.Logger,
+
+    pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
+        removeSocketIfStale(io, cfg.socket_path);
+        const ua = try net.UnixAddress.init(cfg.socket_path);
+        const server = try ua.listen(io, .{});
+        var svc: Service = .{
+            .allocator = allocator,
+            .io = io,
+            .secrets = secrets,
+            .timer = idle_mod.IdleTimer.init(io, cfg.idle_timeout_ms),
+            .server = server,
+            .socket_path = cfg.socket_path,
+            .shutdown = .init(false),
+            .policy = cfg.policy,
+            .rejected = .init(0),
+            .audit_logger = cfg.audit_logger,
+        };
+        svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
+        return svc;
+    }
+
+    fn emit(self: *Service, ev: audit.Event) void {
+        if (self.audit_logger) |l| l.log(ev) catch |err| {
+            std.log.warn("audit log error: {s}", .{@errorName(err)});
+        };
+    }
+
+    pub fn run(self: *Service) !void {
+        var idle_thread = try std.Thread.spawn(.{}, idleWatch, .{self});
+        defer idle_thread.join();
+
+        while (!self.shutdown.load(.acquire)) {
+            const stream = self.server.accept(self.io) catch |err| switch (err) {
+                error.SocketNotListening, error.Canceled => break,
+                else => return err,
+            };
+            self.handle(stream) catch |err| {
+                std.log.warn("handler error: {s}", .{@errorName(err)});
+            };
+            if (self.shutdown.load(.acquire)) break;
+        }
+    }
+
+    pub fn deinit(self: *Service) void {
+        self.emit(.{ .service_locked = .{ .ts_ms = nowMs(self.io), .reason = "exit" } });
+        self.shutdown.store(true, .release);
+        self.server.deinit(self.io);
+        Io.Dir.cwd().deleteFile(self.io, self.socket_path) catch {};
+        zeroAll(self.secrets);
+    }
+
+    fn handle(self: *Service, stream: net.Stream) !void {
+        defer stream.close(self.io);
+
+        const ident = identity.verify(stream.socket.handle) catch {
+            _ = self.rejected.fetchAdd(1, .monotonic);
+            self.emit(.{ .caller_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .pid = 0,
+                .binary = "unknown",
+                .reason = "identity verification failed",
+            } });
+            return;
+        };
+        if (!self.policy.isCallerAllowed(ident.path())) {
+            _ = self.rejected.fetchAdd(1, .monotonic);
+            self.emit(.{ .caller_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .pid = ident.pid,
+                .binary = ident.path(),
+                .reason = "binary not in allowed_callers",
+            } });
+            return;
+        }
+
+        var rbuf: [4096]u8 = undefined;
+        var wbuf: [4096]u8 = undefined;
+        var reader = net.Stream.Reader.init(stream, self.io, &rbuf);
+        var writer = net.Stream.Writer.init(stream, self.io, &wbuf);
+
+        var task_name_buf: [128]u8 = undefined;
+        var task_name_len: usize = 0;
+
+        while (true) {
+            var frame = proto.readFrame(&reader.interface, self.allocator) catch return;
+            defer frame.deinit(self.allocator);
+
+            self.timer.touch(self.io);
+            const op: proto.Op = @enumFromInt(frame.op);
+
+            switch (op) {
+                .ping => {
+                    try proto.writeFrame(&writer.interface, .ping, "");
+                    try writer.interface.flush();
+                },
+                .status => {
+                    var buf: [proto.StatusResp.wire_len]u8 = undefined;
+                    const resp: proto.StatusResp = .{
+                        .running = 1,
+                        .secrets_count = @intCast(self.secrets.count()),
+                        .idle_remaining_ms = self.timer.remainingMs(self.io),
+                    };
+                    resp.encode(&buf);
+                    try proto.writeFrame(&writer.interface, .status, &buf);
+                    try writer.interface.flush();
+                },
+                .lock => {
+                    try proto.writeFrame(&writer.interface, .lock, "");
+                    try writer.interface.flush();
+                    self.shutdown.store(true, .release);
+                    return;
+                },
+                .task_declare => {
+                    if (frame.payload.len > task_name_buf.len) {
+                        try proto.writeFrame(&writer.interface, .err, "task name too long");
+                        try writer.interface.flush();
+                        continue;
+                    }
+                    const task_name = frame.payload;
+                    if (self.policy.findTask(task_name) == null) {
+                        try proto.writeFrame(&writer.interface, .err, "unknown task");
+                        try writer.interface.flush();
+                        continue;
+                    }
+                    @memcpy(task_name_buf[0..task_name.len], task_name);
+                    task_name_len = task_name.len;
+                    self.emit(.{ .task_start = .{
+                        .ts_ms = nowMs(self.io),
+                        .caller_pid = ident.pid,
+                        .caller_bin = ident.path(),
+                        .task = task_name,
+                    } });
+                    try proto.writeFrame(&writer.interface, .task_declare, "");
+                    try writer.interface.flush();
+                },
+                .spawn => {
+                    if (task_name_len == 0) {
+                        try proto.writeFrame(&writer.interface, .err, "no task declared");
+                        try writer.interface.flush();
+                        continue;
+                    }
+                    self.handleSpawn(&writer.interface, task_name_buf[0..task_name_len], frame.payload) catch |err| {
+                        std.log.warn("spawn failed: {s}", .{@errorName(err)});
+                        try proto.writeFrame(&writer.interface, .err, @errorName(err));
+                        try writer.interface.flush();
+                    };
+                },
+                else => {
+                    try proto.writeFrame(&writer.interface, .err, "unknown op");
+                    try writer.interface.flush();
+                },
+            }
+        }
+    }
+
+    fn handleSpawn(self: *Service, writer: *Io.Writer, declared_task: []const u8, payload: []const u8) !void {
+        var parsed = try proto.decodeSpawnPayload(self.allocator, payload);
+        defer parsed.deinit();
+
+        if (!std.mem.eql(u8, parsed.task_name, declared_task)) return CoraError.NoActiveTask;
+        const task = self.policy.findTask(declared_task) orelse return CoraError.NoActiveTask;
+        if (parsed.argv.len == 0) return CoraError.InvalidConfig;
+
+        var env_map = std.process.Environ.Map.init(self.allocator);
+        defer env_map.deinit();
+
+        var bufs = std.ArrayList(SecretBuf).empty;
+        defer {
+            for (bufs.items) |*b| b.zero();
+            bufs.deinit(self.allocator);
+        }
+
+        for (task.allowed_secrets) |name| {
+            var b = SecretBuf{};
+            self.secrets.copyInto(name, &b) catch continue;
+            try bufs.append(self.allocator, b);
+            try env_map.put(name, bufs.items[bufs.items.len - 1].constSlice());
+        }
+
+        const start_ms = nowMs(self.io);
+        var child = try std.process.spawn(self.io, .{
+            .argv = parsed.argv,
+            .environ_map = &env_map,
+        });
+        const child_pid: i32 = if (child.id) |id| @intCast(id) else 0;
+
+        for (task.allowed_secrets) |name| {
+            self.emit(.{ .secret_injected = .{
+                .ts_ms = nowMs(self.io),
+                .task = declared_task,
+                .secret_name = name,
+                .target_pid = child_pid,
+            } });
+        }
+
+        const term = try child.wait(self.io);
+        const code: i32 = switch (term) {
+            .exited => |c| @intCast(c),
+            .signal => |s| -@as(i32, @intCast(@intFromEnum(s))),
+            .stopped, .unknown => -1,
+        };
+
+        self.emit(.{ .task_end = .{
+            .ts_ms = nowMs(self.io),
+            .task = declared_task,
+            .exit_code = code,
+            .duration_ms = nowMs(self.io) - start_ms,
+        } });
+
+        var buf: [proto.SpawnResp.wire_len]u8 = undefined;
+        const resp: proto.SpawnResp = .{ .child_pid = child_pid, .exit_code = code };
+        resp.encode(&buf);
+        try proto.writeFrame(writer, .spawn, &buf);
+        try writer.flush();
+    }
+
+    fn idleWatch(self: *Service) void {
+        while (!self.shutdown.load(.acquire)) {
+            self.io.sleep(.{ .nanoseconds = 250 * std.time.ns_per_ms }, .awake) catch return;
+            if (self.timer.isExpired(self.io)) {
+                self.shutdown.store(true, .release);
+                self.server.socket.close(self.io);
+                return;
+            }
+        }
+    }
+};
+
+fn zeroAll(s: *MemStore) void {
+    var it = s.map.iterator();
+    while (it.next()) |entry| entry.value_ptr.*.zero();
+}
+
+fn removeSocketIfStale(io: Io, path: []const u8) void {
+    Io.Dir.cwd().deleteFile(io, path) catch {};
+}
+
+test "defaultSocketPath builds path" {
+    var buf: [128]u8 = undefined;
+    const p = try defaultSocketPath(&buf);
+    try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
+    try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
+}

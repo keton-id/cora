@@ -1,0 +1,17 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/keton-id/cora/security/advisories/new
+    about: |
+      DO NOT open a public issue for security bugs. Use GitHub Security
+      Advisories (private channel). See SECURITY.md for scope and SLA.
+  - name: 💬 Ask a question / discuss usage
+    url: https://github.com/keton-id/cora/discussions
+    about: |
+      For "how do I use Cora with X?" questions, design discussions, or
+      anything not actionable as a bug or feature — please use Discussions.
+  - name: 📚 Read the docs
+    url: https://github.com/keton-id/cora#readme
+    about: |
+      README · CLAUDE.md (architecture) · SECURITY.md (threat model) ·
+      CONTRIBUTING.md (dev setup).
