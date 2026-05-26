@@ -207,8 +207,10 @@ For integration tests that need a tmp directory, use
 Releases are automated:
 
 1. Conventional Commits land on `main`.
-2. release-please opens / updates a "chore(main): release vX.Y.Z" PR
-   with `build.zig.zon` and `CHANGELOG.md` bumped.
+2. `.github/workflows/release-please.yml` uses the
+   `RELEASE_PLEASE_TOKEN` GitHub Actions secret so release-please can
+   open / update the "chore(main): release vX.Y.Z" PR with
+   `build.zig.zon` and `CHANGELOG.md` bumped.
 3. A maintainer reviews and merges that PR.
 4. The merge tags the release (`vX.Y.Z`), which fires `release.yml`.
 5. `release.yml` cross-compiles `cr` for four targets, attaches tarballs +
