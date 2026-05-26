@@ -8,6 +8,13 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.1.2-alpha.1](https://github.com/keton-id/cora/compare/v0.1.1-alpha.1...v0.1.2-alpha.1) (2026-05-26)
+
+
+### Bug Fixes
+
+* **identity:** use libc readlink on linux (std.fs.readLinkAbsolute removed in 0.16) ([35e3a90](https://github.com/keton-id/cora/commit/35e3a90f61cfa01138d2088e25f6c36ef1091621))
+
 ## [0.1.1-alpha.1](https://github.com/keton-id/cora/compare/v0.1.0-alpha.1...v0.1.1-alpha.1) (2026-05-26)
 
 
