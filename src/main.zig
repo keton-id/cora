@@ -416,6 +416,7 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     const new_pol = cora.policy.Policy{
         .allowed_callers = next_list.items,
         .idle_timeout_ms = pol.idle_timeout_ms,
+        .tasks = pol.tasks,
     };
     const new_cfg = try cora.policy.serialize(allocator, new_pol);
     defer allocator.free(new_cfg);
