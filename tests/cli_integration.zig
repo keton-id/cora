@@ -87,6 +87,10 @@ test "cr binary is installed at expected path" {
     try dir.access(std.testing.io, basename, .{});
 }
 
+const passphrase = "correct horse battery staple";
+const pass_line = passphrase ++ "\n";
+const init_stdin = passphrase ++ "\n" ++ passphrase ++ "\n";
+
 test "cr init writes encrypted cora.zon to cwd" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -94,10 +98,7 @@ test "cr init writes encrypted cora.zon to cwd" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const passphrase = "correct horse battery staple";
-    const stdin_input = passphrase ++ "\n" ++ passphrase ++ "\n";
-
-    var res = try runCr(allocator, io, tmp.dir, &.{ "init", "cora.zon" }, stdin_input);
+    var res = try runCr(allocator, io, tmp.dir, &.{ "init", "cora.zon" }, init_stdin);
     defer res.deinit(allocator);
 
     try std.testing.expect(res.exitOk());
@@ -107,4 +108,81 @@ test "cr init writes encrypted cora.zon to cwd" {
     defer allocator.free(blob);
     try std.testing.expect(blob.len > 4);
     try std.testing.expectEqualStrings("CORA", blob[0..4]);
+}
+
+fn initFixture(allocator: std.mem.Allocator, io: Io, dir: Io.Dir) !void {
+    var res = try runCr(allocator, io, dir, &.{ "init", "cora.zon" }, init_stdin);
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+}
+
+fn policyShow(allocator: std.mem.Allocator, io: Io, dir: Io.Dir) !RunResult {
+    return runCr(allocator, io, dir, &.{ "policy", "show" }, pass_line);
+}
+
+test "secrets set preserves policy (regression: finding 1)" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", "/bin/echo" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "add", "demo", "API_KEY" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        // `cr secrets set` prompts for passphrase then value.
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "API_KEY" }, pass_line ++ "sk-aaa\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    var show = try policyShow(allocator, io, tmp.dir);
+    defer show.deinit(allocator);
+    try std.testing.expect(show.exitOk());
+
+    // cmdPolicy.show prints to stderr via std.debug.print.
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "allowed_callers (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "/bin/echo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "tasks (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "API_KEY") != null);
+}
+
+test "policy allow preserves tasks (regression: finding 2)" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "add", "demo", "API_KEY" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", "/bin/echo" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    var show = try policyShow(allocator, io, tmp.dir);
+    defer show.deinit(allocator);
+    try std.testing.expect(show.exitOk());
+
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "tasks (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "allowed_callers (1)") != null);
 }
