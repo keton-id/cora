@@ -11,6 +11,7 @@ pub const Event = union(enum) {
     caller_rejected: struct { ts_ms: i64, pid: i32, binary: []const u8, reason: []const u8 },
     task_start: struct { ts_ms: i64, caller_pid: i32, caller_bin: []const u8, task: []const u8 },
     secret_injected: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
+    secret_missing: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     task_end: struct { ts_ms: i64, task: []const u8, exit_code: i32, duration_ms: i64 },
 };
 
@@ -113,6 +114,16 @@ pub fn encode(ev: Event, w: *Io.Writer) !void {
             try s.objectField("target_pid");
             try s.write(v.target_pid);
         },
+        .secret_missing => |v| {
+            try s.objectField("ts_ms");
+            try s.write(v.ts_ms);
+            try s.objectField("task");
+            try s.write(v.task);
+            try s.objectField("secret_name");
+            try s.write(v.secret_name);
+            try s.objectField("target_pid");
+            try s.write(v.target_pid);
+        },
         .task_end => |v| {
             try s.objectField("ts_ms");
             try s.write(v.ts_ms);
@@ -168,6 +179,22 @@ test "encode secret_injected (no value field)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"secret_name\":\"GH_TOKEN\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "secret_value") == null);
+}
+
+test "encode secret_missing distinct from secret_injected" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encode(.{ .secret_missing = .{
+        .ts_ms = 7,
+        .task = "demo",
+        .secret_name = "MISSING_KEY",
+        .target_pid = 42,
+    } }, &aw.writer);
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"secret_missing\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"secret_name\":\"MISSING_KEY\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "secret_injected") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
 }
 
 test "Logger writes to tmp file then reads back" {

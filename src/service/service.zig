@@ -256,11 +256,20 @@ pub const Service = struct {
             bufs.deinit(self.allocator);
         }
 
+        var injected_names = std.ArrayList([]const u8).empty;
+        defer injected_names.deinit(self.allocator);
+        var missing_names = std.ArrayList([]const u8).empty;
+        defer missing_names.deinit(self.allocator);
+
         for (task.allowed_secrets) |name| {
             var b = SecretBuf{};
-            self.secrets.copyInto(name, &b) catch continue;
+            self.secrets.copyInto(name, &b) catch {
+                try missing_names.append(self.allocator, name);
+                continue;
+            };
             try bufs.append(self.allocator, b);
             try env_map.put(name, bufs.items[bufs.items.len - 1].constSlice());
+            try injected_names.append(self.allocator, name);
         }
 
         const start_ms = nowMs(self.io);
@@ -270,8 +279,16 @@ pub const Service = struct {
         });
         const child_pid: i32 = childPid(child);
 
-        for (task.allowed_secrets) |name| {
+        for (injected_names.items) |name| {
             self.emit(.{ .secret_injected = .{
+                .ts_ms = nowMs(self.io),
+                .task = declared_task,
+                .secret_name = name,
+                .target_pid = child_pid,
+            } });
+        }
+        for (missing_names.items) |name| {
+            self.emit(.{ .secret_missing = .{
                 .ts_ms = nowMs(self.io),
                 .task = declared_task,
                 .secret_name = name,
