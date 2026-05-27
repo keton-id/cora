@@ -249,6 +249,46 @@ test "loadSecrets rejects wrong passphrase" {
     );
 }
 
+test "saveSecrets preserves config_bytes across mutation" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = "cora.zon";
+    const passphrase = "correct horse battery staple";
+    const initial_cfg =
+        \\.{
+        \\    .allowed_callers = .{ "/usr/local/bin/cr" },
+        \\    .idle_timeout_ms = 900000,
+        \\    .tasks = .{ .{ .name = "demo", .allowed_secrets = .{ "API_KEY" } } },
+        \\}
+    ;
+
+    var initial = MemStore.init(allocator);
+    defer initial.deinit();
+    try initial.put("API_KEY", "sk-aaa");
+    try saveSecrets(allocator, std.testing.io, tmp.dir, path, passphrase, &initial, initial_cfg);
+
+    // Simulate `cr secrets set`: read existing, mutate, write back with same config.
+    const encoded = try readFile(allocator, std.testing.io, tmp.dir, path);
+    defer allocator.free(encoded);
+    var dec = try decrypt(allocator, std.testing.io, passphrase, encoded);
+    defer dec.deinit();
+
+    var loaded = MemStore.init(allocator);
+    defer loaded.deinit();
+    try codec.decode(allocator, dec.secrets_plaintext, &loaded);
+    try loaded.put("NEW_KEY", "sk-bbb");
+    try saveSecrets(allocator, std.testing.io, tmp.dir, path, passphrase, &loaded, dec.config_bytes);
+
+    // Re-decrypt and assert config_bytes survived.
+    const encoded2 = try readFile(allocator, std.testing.io, tmp.dir, path);
+    defer allocator.free(encoded2);
+    var dec2 = try decrypt(allocator, std.testing.io, passphrase, encoded2);
+    defer dec2.deinit();
+    try std.testing.expectEqualStrings(initial_cfg, dec2.config_bytes);
+}
+
 test "two encryptions of same passphrase produce different ciphertexts" {
     const allocator = std.testing.allocator;
     var a = try createEncrypted(allocator, std.testing.io, .{

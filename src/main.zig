@@ -512,19 +512,23 @@ fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []
     defer std.crypto.secureZero(u8, &val_buf);
     const value = try readLine("Value: ", &val_buf);
 
-    var store_ = cora.MemStore.init(allocator);
-    defer store_.deinit();
-
-    cora.store.loadSecrets(allocator, io, cwd, path, passphrase, &store_) catch |err| switch (err) {
+    const encoded = try cora.store.readFile(allocator, io, cwd, path);
+    defer allocator.free(encoded);
+    var dec = cora.store.decrypt(allocator, io, passphrase, encoded) catch |err| switch (err) {
         cora.CoraError.AuthFailed => {
             std.debug.print("authentication failed\n", .{});
             std.process.exit(1);
         },
         else => return err,
     };
+    defer dec.deinit();
+
+    var store_ = cora.MemStore.init(allocator);
+    defer store_.deinit();
+    try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
 
     try store_.put(key, value);
-    try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, "");
+    try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
     std.debug.print("set {s}\n", .{key});
 }
 
@@ -569,22 +573,26 @@ fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key:
     defer std.crypto.secureZero(u8, &pass_buf);
     const passphrase = try readLine("Passphrase: ", &pass_buf);
 
-    var store_ = cora.MemStore.init(allocator);
-    defer store_.deinit();
-
-    cora.store.loadSecrets(allocator, io, cwd, path, passphrase, &store_) catch |err| switch (err) {
+    const encoded = try cora.store.readFile(allocator, io, cwd, path);
+    defer allocator.free(encoded);
+    var dec = cora.store.decrypt(allocator, io, passphrase, encoded) catch |err| switch (err) {
         cora.CoraError.AuthFailed => {
             std.debug.print("authentication failed\n", .{});
             std.process.exit(1);
         },
         else => return err,
     };
+    defer dec.deinit();
+
+    var store_ = cora.MemStore.init(allocator);
+    defer store_.deinit();
+    try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
 
     if (!store_.delete(key)) {
         std.debug.print("no such secret: {s}\n", .{key});
         std.process.exit(1);
     }
-    try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, "");
+    try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
     std.debug.print("deleted {s}\n", .{key});
 }
 
