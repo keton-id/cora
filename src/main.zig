@@ -109,11 +109,11 @@ fn cmdInit(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
 
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
-    const passphrase = try readLine("Create passphrase: ", &pass_buf);
+    const passphrase = try readSecret("Create passphrase: ", &pass_buf);
 
     var confirm_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &confirm_buf);
-    const confirm = try readLine("Confirm passphrase: ", &confirm_buf);
+    const confirm = try readSecret("Confirm passphrase: ", &confirm_buf);
 
     if (!std.mem.eql(u8, passphrase, confirm)) {
         std.debug.print("passphrases do not match\n", .{});
@@ -159,7 +159,7 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
 
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
-    const passphrase = try readLine("Passphrase: ", &pass_buf);
+    const passphrase = try readSecret("Passphrase: ", &pass_buf);
 
     var secrets = cora.MemStore.init(allocator);
     defer secrets.deinit();
@@ -352,7 +352,7 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
 
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
-    const passphrase = try readLine("Passphrase: ", &pass_buf);
+    const passphrase = try readSecret("Passphrase: ", &pass_buf);
 
     const encoded = try cora.store.readFile(allocator, io, cwd, path);
     defer allocator.free(encoded);
@@ -507,11 +507,11 @@ fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []
 
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
-    const passphrase = try readLine("Passphrase: ", &pass_buf);
+    const passphrase = try readSecret("Passphrase: ", &pass_buf);
 
     var val_buf: [cora.max_secret_len]u8 = undefined;
     defer std.crypto.secureZero(u8, &val_buf);
-    const value = try readLine("Value: ", &val_buf);
+    const value = try readSecret("Value: ", &val_buf);
 
     const encoded = try cora.store.readFile(allocator, io, cwd, path);
     defer allocator.free(encoded);
@@ -542,7 +542,7 @@ fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void 
 
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
-    const passphrase = try readLine("Passphrase: ", &pass_buf);
+    const passphrase = try readSecret("Passphrase: ", &pass_buf);
 
     var store_ = cora.MemStore.init(allocator);
     defer store_.deinit();
@@ -572,7 +572,7 @@ fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key:
 
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
-    const passphrase = try readLine("Passphrase: ", &pass_buf);
+    const passphrase = try readSecret("Passphrase: ", &pass_buf);
 
     const encoded = try cora.store.readFile(allocator, io, cwd, path);
     defer allocator.free(encoded);
@@ -619,8 +619,31 @@ fn stdinReadByte(out: *[1]u8) !usize {
     }
 }
 
-fn readLine(prompt: []const u8, buf: []u8) ![]const u8 {
+/// Read a secret line (passphrase or secret value) from stdin with terminal
+/// echo suppressed. On non-TTY stdin (test pipes, redirected scripts) the
+/// terminal manipulation is skipped silently — the pipe does not echo
+/// anything anyway. Windows masking is deferred; on Windows this is
+/// equivalent to the previous echoing readLine.
+fn readSecret(prompt: []const u8, buf: []u8) ![]const u8 {
     std.debug.print("{s}", .{prompt});
+
+    var saved: ?std.posix.termios = null;
+    defer {
+        if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
+        if (saved != null) std.debug.print("\n", .{});
+    }
+
+    if (builtin.os.tag != .windows) {
+        if (std.posix.tcgetattr(std.posix.STDIN_FILENO)) |orig| {
+            saved = orig;
+            var t = orig;
+            t.lflag.ECHO = false;
+            std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, t) catch {};
+        } else |_| {
+            // stdin is not a TTY (pipe or redirect); leave terminal alone.
+        }
+    }
+
     var len: usize = 0;
     while (len < buf.len) {
         var one: [1]u8 = undefined;
