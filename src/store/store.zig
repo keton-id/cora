@@ -101,13 +101,27 @@ fn buildAad(buf: *[format.header_size]u8, header: *const format.Header) []const 
     return buf[0..];
 }
 
+/// Atomic write: stream to `<path>.tmp`, fsync, then rename onto the target.
+/// On crash or partial write the original `path` is untouched. `<path>.tmp`
+/// is removed on any error before rename.
 pub fn writeFile(io: Io, dir: Io.Dir, path: []const u8, bytes: []const u8) !void {
-    var file = try dir.createFile(io, path, .{ .exclusive = false, .truncate = true });
-    defer file.close(io);
-    if (@hasDecl(std.posix, "fchmod")) {
-        std.posix.fchmod(file.handle, 0o600) catch {};
+    var tmp_buf: [std.posix.PATH_MAX]u8 = undefined;
+    const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
+
+    {
+        var file = try dir.createFile(io, tmp_path, .{ .exclusive = false, .truncate = true });
+        errdefer dir.deleteFile(io, tmp_path) catch {};
+        defer file.close(io);
+
+        if (@hasDecl(std.posix, "fchmod")) {
+            std.posix.fchmod(file.handle, 0o600) catch {};
+        }
+        try file.writeStreamingAll(io, bytes);
+        try file.sync(io);
     }
-    try file.writeStreamingAll(io, bytes);
+
+    errdefer dir.deleteFile(io, tmp_path) catch {};
+    try dir.rename(tmp_path, dir, path, io);
 }
 
 pub fn readFile(allocator: std.mem.Allocator, io: Io, dir: Io.Dir, path: []const u8) ![]u8 {
@@ -246,6 +260,26 @@ test "loadSecrets rejects wrong passphrase" {
     try std.testing.expectError(
         error.AuthFailed,
         loadSecrets(allocator, std.testing.io, tmp.dir, "cora.zon", "wrong-passphrase-here", &loaded),
+    );
+}
+
+test "writeFile leaves no .tmp sibling on success" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = "cora.zon";
+    try writeFile(std.testing.io, tmp.dir, path, "hello atomic world");
+
+    // Target file present with right content.
+    const got = try tmp.dir.readFileAlloc(std.testing.io, path, allocator, .limited(4096));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("hello atomic world", got);
+
+    // No stale temp file.
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.access(std.testing.io, "cora.zon.tmp", .{}),
     );
 }
 
