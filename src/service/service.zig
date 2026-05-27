@@ -88,6 +88,7 @@ pub const Service = struct {
         removeSocketIfStale(io, cfg.socket_path);
         const ua = try net.UnixAddress.init(cfg.socket_path);
         const server = try ua.listen(io, .{});
+        try restrictSocketPermissions(cfg.socket_path);
         var svc: Service = .{
             .allocator = allocator,
             .io = io,
@@ -320,6 +321,16 @@ fn removeSocketIfStale(io: Io, path: []const u8) void {
     Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
+/// Force the bound AF_UNIX socket to mode 0600. Without this, the socket
+/// file inherits the process umask (typically 022, leaving the socket
+/// world-readable). On Windows AF_UNIX sockets, access is controlled by
+/// the NTFS ACL of `%LOCALAPPDATA%\cora`, not POSIX modes.
+fn restrictSocketPermissions(path: []const u8) !void {
+    if (builtin.os.tag == .windows) return;
+    const path_z = try std.posix.toPosixPath(path);
+    if (std.c.chmod(&path_z, 0o600) != 0) return error.SocketChmodFailed;
+}
+
 test "defaultSocketPath builds path" {
     var buf: [520]u8 = undefined;
     const p = try defaultSocketPath(&buf);
@@ -329,4 +340,40 @@ test "defaultSocketPath builds path" {
         try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
         try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
     }
+}
+
+test "restrictSocketPermissions forces 0600" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "/tmp/cora-test-chmod-{d}.tmp",
+        .{std.c.getpid()},
+    );
+    const path_z = try std.posix.toPosixPath(path);
+
+    // Create a regular file with a permissive baseline so a no-op chmod would
+    // fail the assert below.
+    const fd = std.c.open(
+        &path_z,
+        .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
+        @as(std.c.mode_t, 0o666),
+    );
+    if (fd < 0) return error.OpenFailed;
+    _ = std.c.close(fd);
+    defer _ = std.c.unlink(&path_z);
+
+    if (std.c.chmod(&path_z, 0o666) != 0) return error.SetupChmodFailed;
+
+    try restrictSocketPermissions(path);
+
+    // Re-open to fstat (std.c.stat dispatch is platform-specific; fstat is portable).
+    const rfd = std.c.open(&path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (rfd < 0) return error.OpenFailed;
+    defer _ = std.c.close(rfd);
+
+    var st: std.c.Stat = undefined;
+    if (std.c.fstat(rfd, &st) != 0) return error.StatFailed;
+    try std.testing.expectEqual(@as(u32, 0o600), @as(u32, st.mode) & 0o777);
 }
