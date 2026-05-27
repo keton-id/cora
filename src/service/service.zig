@@ -361,6 +361,7 @@ test "defaultSocketPath builds path" {
 
 test "restrictSocketPermissions forces 0600" {
     if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
 
     var path_buf: [128]u8 = undefined;
     const path = try std.fmt.bufPrint(
@@ -385,12 +386,14 @@ test "restrictSocketPermissions forces 0600" {
 
     try restrictSocketPermissions(path);
 
-    // Re-open to fstat (std.c.stat dispatch is platform-specific; fstat is portable).
-    const rfd = std.c.open(&path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
-    if (rfd < 0) return error.OpenFailed;
-    defer _ = std.c.close(rfd);
-
-    var st: std.c.Stat = undefined;
-    if (std.c.fstat(rfd, &st) != 0) return error.StatFailed;
-    try std.testing.expectEqual(@as(u32, 0o600), @as(u32, st.mode) & 0o777);
+    // Verify via cross-platform Io.File.stat. std.c.fstat is `void` on Linux
+    // (only macOS has the symbol via dispatch), so a libc fstat call would
+    // fail to compile on linux runners.
+    var file = try Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    const st = try file.stat(io);
+    try std.testing.expectEqual(
+        @as(std.posix.mode_t, 0o600),
+        st.permissions.toMode() & 0o777,
+    );
 }
