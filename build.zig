@@ -50,9 +50,26 @@ pub fn build(b: *std.Build) void {
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const integration_opts = b.addOptions();
+    integration_opts.addOption([]const u8, "cr_bin_path", b.getInstallPath(.bin, "cr"));
+
+    const integration_mod = b.createModule(.{
+        .root_source_file = b.path("tests/cli_integration.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "integration_options", .module = integration_opts.createModule() },
+        },
+    });
+    const integration_tests = b.addTest(.{ .root_module = integration_mod });
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+    run_integration_tests.step.dependOn(b.getInstallStep());
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_integration_tests.step);
 
     const fmt_step = b.step("fmt", "Check formatting");
     const fmt = b.addFmt(.{ .paths = &.{ "src", "build.zig" }, .check = true });
