@@ -74,12 +74,25 @@ jobs:
           STABLE: ${{ steps.tag.outputs.value }}
         run: |
           set -euo pipefail
-          SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$SOURCE" --jq '.object.sha')
-          # Re-running with the same STABLE tag is safe: ignore "already exists".
-          if gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$STABLE" >/dev/null 2>&1; then
-            echo "Stable tag $STABLE already exists at $(gh api "repos/$GITHUB_REPOSITORY/git/refs/tags/$STABLE" --jq '.object.sha'); skipping create."
+
+          # The /git/refs/tags/<name> endpoint does PREFIX matching: querying
+          # `v0.5.0` while `v0.5.0-alpha.1` exists returns an array and confuses
+          # both the SHA lookup (jq) and the existence check. Use matching-refs
+          # which always returns an array, then filter by exact ref name.
+          SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$SOURCE" \
+            --jq ".[] | select(.ref==\"refs/tags/$SOURCE\") | .object.sha")
+          if [ -z "$SHA" ]; then
+            echo "Source tag $SOURCE not found" >&2
+            exit 1
+          fi
+
+          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$STABLE" \
+            --jq ".[] | select(.ref==\"refs/tags/$STABLE\") | .object.sha")
+          if [ -n "$EXISTING" ]; then
+            echo "Stable tag $STABLE already exists at $EXISTING; skipping create."
           else
-            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$STABLE" -f sha="$SHA"
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$STABLE" -f sha="$SHA"
             echo "Created tag $STABLE -> $SHA"
           fi
 
