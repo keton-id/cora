@@ -8,6 +8,14 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.5.1-alpha.1](https://github.com/keton-id/cora/compare/v0.5.0-alpha.1...v0.5.1-alpha.1) (2026-05-28)
+
+
+### Bug Fixes
+
+* **ci:** use matching-refs API for exact tag check in release workflow ([0c49168](https://github.com/keton-id/cora/commit/0c49168eebfef15804d353fc523b474f2e7154b5))
+* **ci:** use matching-refs API for exact tag check in release workflow ([b472398](https://github.com/keton-id/cora/commit/b4723981e7040c44e6edc41a40a49126f182d795))
+
 ## [0.5.0-alpha.1](https://github.com/keton-id/cora/compare/v0.4.0-alpha.1...v0.5.0-alpha.1) (2026-05-28)
 
 
