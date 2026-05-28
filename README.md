@@ -1,5 +1,9 @@
 # cora 🤫
 
+[![CI](https://github.com/keton-id/cora/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/keton-id/cora/actions/workflows/ci.yml)
+[![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/keton-id/cora/pulls)
+
 > *"He never let anyone hear his true voice."*
 
 **Zero-knowledge secret injection for AI agents. Written in Zig.**
@@ -46,7 +50,7 @@ agent — nothing to print. The value was never in that process.
 
 ## Install
 
-Three options. Pick whichever fits your trust model.
+Pick whichever fits your trust model.
 
 ### A. Pre-built binary via install script (recommended)
 
@@ -69,7 +73,34 @@ curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
     | sh -s -- --channel alpha
 ```
 
-### B. Manual download from GitHub Releases
+### B. Homebrew (macOS + Linux)
+
+```bash
+brew tap keton-id/tap
+brew install cora
+```
+
+The package name is `cora`; the installed binary is `cr`. `brew upgrade cora`
+later picks up new stable releases. The
+[`keton-id/homebrew-tap`](https://github.com/keton-id/homebrew-tap) repo
+is updated automatically by Cora's release pipeline on every stable
+tag. Pre-release alpha tags are **not** pushed to the tap.
+
+### C. Scoop (Windows preview)
+
+```powershell
+scoop bucket add keton-id https://github.com/keton-id/scoop-bucket
+scoop install cora
+```
+
+The package name is `cora`; the installed binary is `cr.exe`. `scoop update cora`
+later picks up new stable releases. The
+[`keton-id/scoop-bucket`](https://github.com/keton-id/scoop-bucket) repo
+is updated automatically by Cora's release pipeline on every stable
+tag. See *Windows preview limitations* below for the current trust
+model on Windows.
+
+### D. Manual download from GitHub Releases
 
 Grab the tarball for your platform from the
 [Releases page](https://github.com/keton-id/cora/releases) and verify the
@@ -114,7 +145,7 @@ cr version
 Tier 2 (post-1.0) will add Named Pipe IPC, explicit DACL hardening on
 `cora.zon`, and Authenticode-based caller verification.
 
-### C. Build from source
+### E. Build from source
 
 Requires Zig 0.16+.
 
@@ -248,4 +279,4 @@ responsible disclosure (via GitHub Security Advisories).
 
 ---
 
-*Named after Donquixote Rosinante — who hid everything to protect what mattered.*
+*Named after Donquixote Rosinante(Corazon) — who hid everything to protect what mattered.*
