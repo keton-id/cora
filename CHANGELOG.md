@@ -8,6 +8,36 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.5.0-alpha.1](https://github.com/keton-id/cora/compare/v0.4.0-alpha.1...v0.5.0-alpha.1) (2026-05-28)
+
+
+### Features
+
+* **ci:** allow workflow_dispatch to promote prerelease to stable ([16a5fe7](https://github.com/keton-id/cora/commit/16a5fe71e04ed5bce31a0eee64ba41f6c5308ac9))
+* **ci:** publish homebrew formula on stable release ([4e649ce](https://github.com/keton-id/cora/commit/4e649cee61dbdac8390aaff2f486c82b79412843))
+* **ci:** publish scoop manifest on stable release ([460c5a3](https://github.com/keton-id/cora/commit/460c5a37ed5cc180265375ac2a0e423c8778bb07))
+* **cli:** mask passphrase and secret-value input via termios ([d55126e](https://github.com/keton-id/cora/commit/d55126ed8fa1b56576fd26836d3c017a2c55b15d))
+* **identity:** add Windows caller verification stub ([1be670a](https://github.com/keton-id/cora/commit/1be670a1ed928f5b5dc1f81eea42eda6ccb993a8))
+* modernize `cr tui` with pane-based vaxis UI ([a379ab6](https://github.com/keton-id/cora/commit/a379ab68ca0d6ab65f95607e6db19d655a1c1066))
+* **tui:** refactor & pane-based vaxis interface ([351ef02](https://github.com/keton-id/cora/commit/351ef02938d3d381453a706b06b9165627e9d241))
+* **windows:** gate POSIX-only paths for Windows cross-compile ([635f54c](https://github.com/keton-id/cora/commit/635f54c4478c0ccb5a505590af48f54e67b0e857))
+* **windows:** Tier 1 preview support ([f32345e](https://github.com/keton-id/cora/commit/f32345ecf1cf0a686de63fe5328d244fdabafb9e))
+* **windows:** wire AF_UNIX IPC and stub caller identity ([2b0757d](https://github.com/keton-id/cora/commit/2b0757d1b39a22235abcef58fd42b9ea883154af))
+
+
+### Bug Fixes
+
+* **audit:** only emit secret_injected for actually injected secrets ([eaa5f5a](https://github.com/keton-id/cora/commit/eaa5f5af400847217fa6d731411e286f9b23286c))
+* **ci:** use cora as package name for tap and bucket ([f9fe258](https://github.com/keton-id/cora/commit/f9fe2587de9c865431b0cef4668ee83ba1d23437))
+* **cli:** scope readSecret termios block to POSIX ([acbe394](https://github.com/keton-id/cora/commit/acbe3944c34abe6af3c71f1ec6433b96328174bd))
+* **cli:** scope readSecret termios block to POSIX paths only ([ffbab38](https://github.com/keton-id/cora/commit/ffbab388dc02b9375936d1297d550e64fa07ce6d))
+* **identity:** use libc readlink on linux (std.fs.readLinkAbsolute removed in 0.16) ([35e3a90](https://github.com/keton-id/cora/commit/35e3a90f61cfa01138d2088e25f6c36ef1091621))
+* **policy:** preserve tasks on policy allow/deny ([cbbbe9b](https://github.com/keton-id/cora/commit/cbbbe9b60f33c244c506cf66c12eadde937e7362))
+* **secrets:** preserve policy on secrets set/delete ([a59d3e6](https://github.com/keton-id/cora/commit/a59d3e675393a0e1229cf3056073692edad17b17))
+* **service:** chmod UDS socket to 0600 after bind ([c5dd945](https://github.com/keton-id/cora/commit/c5dd945568a0a555ae918db038e085d54affce45))
+* **store:** atomic write of cora.zon via temp + rename ([1e6c795](https://github.com/keton-id/cora/commit/1e6c795bc92e068b2759aeaef93e80680ccde7a8))
+* **test:** use Io.File.stat for cross-platform mode check ([e97501c](https://github.com/keton-id/cora/commit/e97501c0ae15946e3063b5914e0275470f40f5f5))
+
 ## [0.4.0-alpha.1](https://github.com/keton-id/cora/compare/v0.3.0-alpha.1...v0.4.0-alpha.1) (2026-05-28)
 
 
