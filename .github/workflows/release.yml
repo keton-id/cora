@@ -206,3 +206,49 @@ jobs:
           else
             gh release edit "$TAG" --draft=false --prerelease=false --repo "$GITHUB_REPOSITORY"
           fi
+
+  publish-homebrew:
+    name: publish homebrew formula
+    needs: [resolve, publish]
+    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cora
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Render formula
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          chmod +x cora/scripts/render-homebrew.sh
+          cora/scripts/render-homebrew.sh "$VERSION" dist > cr.rb
+          echo "Rendered Formula/cr.rb:"
+          cat cr.rb
+
+      - name: Push to keton-id/homebrew-tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/keton-id/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp cr.rb tap/Formula/cr.rb
+          cd tap
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          if git diff --quiet -- Formula/cr.rb; then
+            echo "Formula/cr.rb unchanged; skipping push."
+            exit 0
+          fi
+          git add Formula/cr.rb
+          git commit -m "cr ${VERSION}"
+          git push
