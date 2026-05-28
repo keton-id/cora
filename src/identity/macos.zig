@@ -15,8 +15,9 @@ pub fn verify(fd: std.posix.fd_t) CoraError!CallerIdentity {
     if (rc != 0) return CoraError.CallerNotAllowed;
 
     // macOS does not expose PEERUID via getsockopt on Unix sockets.
-    // Socket is created at chmod 600 in the calling user's namespace,
-    // so the connecting process must already share our uid.
+    // The socket file is chmod'd to 0600 by Service.start, so any connecting
+    // process must already share our uid (or be root). We surface our own uid
+    // here for the audit trail.
     var ident = CallerIdentity{ .pid = @intCast(pid), .uid = @intCast(std.c.getuid()) };
     try fillPath(@intCast(pid), &ident);
     return ident;

@@ -101,13 +101,27 @@ fn buildAad(buf: *[format.header_size]u8, header: *const format.Header) []const 
     return buf[0..];
 }
 
+/// Atomic write: stream to `<path>.tmp`, fsync, then rename onto the target.
+/// On crash or partial write the original `path` is untouched. `<path>.tmp`
+/// is removed on any error before rename.
 pub fn writeFile(io: Io, dir: Io.Dir, path: []const u8, bytes: []const u8) !void {
-    var file = try dir.createFile(io, path, .{ .exclusive = false, .truncate = true });
-    defer file.close(io);
-    if (@hasDecl(std.posix, "fchmod")) {
-        std.posix.fchmod(file.handle, 0o600) catch {};
+    var tmp_buf: [std.posix.PATH_MAX]u8 = undefined;
+    const tmp_path = try std.fmt.bufPrint(&tmp_buf, "{s}.tmp", .{path});
+
+    {
+        var file = try dir.createFile(io, tmp_path, .{ .exclusive = false, .truncate = true });
+        errdefer dir.deleteFile(io, tmp_path) catch {};
+        defer file.close(io);
+
+        if (@hasDecl(std.posix, "fchmod")) {
+            std.posix.fchmod(file.handle, 0o600) catch {};
+        }
+        try file.writeStreamingAll(io, bytes);
+        try file.sync(io);
     }
-    try file.writeStreamingAll(io, bytes);
+
+    errdefer dir.deleteFile(io, tmp_path) catch {};
+    try dir.rename(tmp_path, dir, path, io);
 }
 
 pub fn readFile(allocator: std.mem.Allocator, io: Io, dir: Io.Dir, path: []const u8) ![]u8 {
@@ -247,6 +261,66 @@ test "loadSecrets rejects wrong passphrase" {
         error.AuthFailed,
         loadSecrets(allocator, std.testing.io, tmp.dir, "cora.zon", "wrong-passphrase-here", &loaded),
     );
+}
+
+test "writeFile leaves no .tmp sibling on success" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = "cora.zon";
+    try writeFile(std.testing.io, tmp.dir, path, "hello atomic world");
+
+    // Target file present with right content.
+    const got = try tmp.dir.readFileAlloc(std.testing.io, path, allocator, .limited(4096));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("hello atomic world", got);
+
+    // No stale temp file.
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.access(std.testing.io, "cora.zon.tmp", .{}),
+    );
+}
+
+test "saveSecrets preserves config_bytes across mutation" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = "cora.zon";
+    const passphrase = "correct horse battery staple";
+    const initial_cfg =
+        \\.{
+        \\    .allowed_callers = .{ "/usr/local/bin/cr" },
+        \\    .idle_timeout_ms = 900000,
+        \\    .tasks = .{ .{ .name = "demo", .allowed_secrets = .{ "API_KEY" } } },
+        \\}
+    ;
+
+    var initial = MemStore.init(allocator);
+    defer initial.deinit();
+    try initial.put("API_KEY", "sk-aaa");
+    try saveSecrets(allocator, std.testing.io, tmp.dir, path, passphrase, &initial, initial_cfg);
+
+    // Simulate `cr secrets set`: read existing, mutate, write back with same config.
+    const encoded = try readFile(allocator, std.testing.io, tmp.dir, path);
+    defer allocator.free(encoded);
+    var dec = try decrypt(allocator, std.testing.io, passphrase, encoded);
+    defer dec.deinit();
+
+    var loaded = MemStore.init(allocator);
+    defer loaded.deinit();
+    try codec.decode(allocator, dec.secrets_plaintext, &loaded);
+    try loaded.put("NEW_KEY", "sk-bbb");
+    try saveSecrets(allocator, std.testing.io, tmp.dir, path, passphrase, &loaded, dec.config_bytes);
+
+    // Re-decrypt and assert config_bytes survived.
+    const encoded2 = try readFile(allocator, std.testing.io, tmp.dir, path);
+    defer allocator.free(encoded2);
+    var dec2 = try decrypt(allocator, std.testing.io, passphrase, encoded2);
+    defer dec2.deinit();
+    try std.testing.expectEqualStrings(initial_cfg, dec2.config_bytes);
 }
 
 test "two encryptions of same passphrase produce different ciphertexts" {

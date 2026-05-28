@@ -88,6 +88,7 @@ pub const Service = struct {
         removeSocketIfStale(io, cfg.socket_path);
         const ua = try net.UnixAddress.init(cfg.socket_path);
         const server = try ua.listen(io, .{});
+        try restrictSocketPermissions(cfg.socket_path);
         var svc: Service = .{
             .allocator = allocator,
             .io = io,
@@ -255,11 +256,20 @@ pub const Service = struct {
             bufs.deinit(self.allocator);
         }
 
+        var injected_names = std.ArrayList([]const u8).empty;
+        defer injected_names.deinit(self.allocator);
+        var missing_names = std.ArrayList([]const u8).empty;
+        defer missing_names.deinit(self.allocator);
+
         for (task.allowed_secrets) |name| {
             var b = SecretBuf{};
-            self.secrets.copyInto(name, &b) catch continue;
+            self.secrets.copyInto(name, &b) catch {
+                try missing_names.append(self.allocator, name);
+                continue;
+            };
             try bufs.append(self.allocator, b);
             try env_map.put(name, bufs.items[bufs.items.len - 1].constSlice());
+            try injected_names.append(self.allocator, name);
         }
 
         const start_ms = nowMs(self.io);
@@ -269,8 +279,16 @@ pub const Service = struct {
         });
         const child_pid: i32 = childPid(child);
 
-        for (task.allowed_secrets) |name| {
+        for (injected_names.items) |name| {
             self.emit(.{ .secret_injected = .{
+                .ts_ms = nowMs(self.io),
+                .task = declared_task,
+                .secret_name = name,
+                .target_pid = child_pid,
+            } });
+        }
+        for (missing_names.items) |name| {
+            self.emit(.{ .secret_missing = .{
                 .ts_ms = nowMs(self.io),
                 .task = declared_task,
                 .secret_name = name,
@@ -320,6 +338,16 @@ fn removeSocketIfStale(io: Io, path: []const u8) void {
     Io.Dir.cwd().deleteFile(io, path) catch {};
 }
 
+/// Force the bound AF_UNIX socket to mode 0600. Without this, the socket
+/// file inherits the process umask (typically 022, leaving the socket
+/// world-readable). On Windows AF_UNIX sockets, access is controlled by
+/// the NTFS ACL of `%LOCALAPPDATA%\cora`, not POSIX modes.
+fn restrictSocketPermissions(path: []const u8) !void {
+    if (builtin.os.tag == .windows) return;
+    const path_z = try std.posix.toPosixPath(path);
+    if (std.c.chmod(&path_z, 0o600) != 0) return error.SocketChmodFailed;
+}
+
 test "defaultSocketPath builds path" {
     var buf: [520]u8 = undefined;
     const p = try defaultSocketPath(&buf);
@@ -329,4 +357,43 @@ test "defaultSocketPath builds path" {
         try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
         try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
     }
+}
+
+test "restrictSocketPermissions forces 0600" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+
+    var path_buf: [128]u8 = undefined;
+    const path = try std.fmt.bufPrint(
+        &path_buf,
+        "/tmp/cora-test-chmod-{d}.tmp",
+        .{std.c.getpid()},
+    );
+    const path_z = try std.posix.toPosixPath(path);
+
+    // Create a regular file with a permissive baseline so a no-op chmod would
+    // fail the assert below.
+    const fd = std.c.open(
+        &path_z,
+        .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
+        @as(std.c.mode_t, 0o666),
+    );
+    if (fd < 0) return error.OpenFailed;
+    _ = std.c.close(fd);
+    defer _ = std.c.unlink(&path_z);
+
+    if (std.c.chmod(&path_z, 0o666) != 0) return error.SetupChmodFailed;
+
+    try restrictSocketPermissions(path);
+
+    // Verify via cross-platform Io.File.stat. std.c.fstat is `void` on Linux
+    // (only macOS has the symbol via dispatch), so a libc fstat call would
+    // fail to compile on linux runners.
+    var file = try Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    const st = try file.stat(io);
+    try std.testing.expectEqual(
+        @as(std.posix.mode_t, 0o600),
+        st.permissions.toMode() & 0o777,
+    );
 }
