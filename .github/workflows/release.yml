@@ -252,3 +252,50 @@ jobs:
           git add Formula/cr.rb
           git commit -m "cr ${VERSION}"
           git push
+
+  publish-scoop:
+    name: publish scoop manifest
+    needs: [resolve, publish]
+    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cora
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Render manifest
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          chmod +x cora/scripts/render-scoop.sh
+          cora/scripts/render-scoop.sh "$VERSION" dist > cr.json
+          echo "Rendered bucket/cr.json:"
+          cat cr.json
+          python3 -c "import json,sys; json.load(open('cr.json'))"
+
+      - name: Push to keton-id/scoop-bucket
+        env:
+          GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/keton-id/scoop-bucket.git" bucket
+          mkdir -p bucket/bucket
+          cp cr.json bucket/bucket/cr.json
+          cd bucket
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          if git diff --quiet -- bucket/cr.json; then
+            echo "bucket/cr.json unchanged; skipping push."
+            exit 0
+          fi
+          git add bucket/cr.json
+          git commit -m "cr ${VERSION}"
+          git push
