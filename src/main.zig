@@ -627,13 +627,15 @@ fn stdinReadByte(out: *[1]u8) !usize {
 fn readSecret(prompt: []const u8, buf: []u8) ![]const u8 {
     std.debug.print("{s}", .{prompt});
 
-    var saved: ?std.posix.termios = null;
-    defer {
-        if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
-        if (saved != null) std.debug.print("\n", .{});
-    }
-
     if (builtin.os.tag != .windows) {
+        // POSIX: disable terminal echo around the read, restore on exit.
+        // The block also brackets the byte loop so masking persists while
+        // we collect input.
+        var saved: ?std.posix.termios = null;
+        defer {
+            if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
+            if (saved != null) std.debug.print("\n", .{});
+        }
         if (std.posix.tcgetattr(std.posix.STDIN_FILENO)) |orig| {
             saved = orig;
             var t = orig;
@@ -642,8 +644,13 @@ fn readSecret(prompt: []const u8, buf: []u8) ![]const u8 {
         } else |_| {
             // stdin is not a TTY (pipe or redirect); leave terminal alone.
         }
+        return readLineBytes(buf);
     }
 
+    return readLineBytes(buf);
+}
+
+fn readLineBytes(buf: []u8) ![]const u8 {
     var len: usize = 0;
     while (len < buf.len) {
         var one: [1]u8 = undefined;
