@@ -8,6 +8,27 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.4.0-alpha.1](https://github.com/keton-id/cora/compare/v0.3.0-alpha.1...v0.4.0-alpha.1) (2026-05-28)
+
+
+### Features
+
+* **ci:** allow workflow_dispatch to promote prerelease to stable ([16a5fe7](https://github.com/keton-id/cora/commit/16a5fe71e04ed5bce31a0eee64ba41f6c5308ac9))
+* **ci:** publish homebrew formula on stable release ([4e649ce](https://github.com/keton-id/cora/commit/4e649cee61dbdac8390aaff2f486c82b79412843))
+* **ci:** publish scoop manifest on stable release ([460c5a3](https://github.com/keton-id/cora/commit/460c5a37ed5cc180265375ac2a0e423c8778bb07))
+* **cli:** mask passphrase and secret-value input via termios ([d55126e](https://github.com/keton-id/cora/commit/d55126ed8fa1b56576fd26836d3c017a2c55b15d))
+
+
+### Bug Fixes
+
+* **audit:** only emit secret_injected for actually injected secrets ([eaa5f5a](https://github.com/keton-id/cora/commit/eaa5f5af400847217fa6d731411e286f9b23286c))
+* **ci:** use cora as package name for tap and bucket ([f9fe258](https://github.com/keton-id/cora/commit/f9fe2587de9c865431b0cef4668ee83ba1d23437))
+* **policy:** preserve tasks on policy allow/deny ([cbbbe9b](https://github.com/keton-id/cora/commit/cbbbe9b60f33c244c506cf66c12eadde937e7362))
+* **secrets:** preserve policy on secrets set/delete ([a59d3e6](https://github.com/keton-id/cora/commit/a59d3e675393a0e1229cf3056073692edad17b17))
+* **service:** chmod UDS socket to 0600 after bind ([c5dd945](https://github.com/keton-id/cora/commit/c5dd945568a0a555ae918db038e085d54affce45))
+* **store:** atomic write of cora.zon via temp + rename ([1e6c795](https://github.com/keton-id/cora/commit/1e6c795bc92e068b2759aeaef93e80680ccde7a8))
+* **test:** use Io.File.stat for cross-platform mode check ([e97501c](https://github.com/keton-id/cora/commit/e97501c0ae15946e3063b5914e0275470f40f5f5))
+
 ## [0.3.0-alpha.1](https://github.com/keton-id/cora/compare/v0.2.0-alpha.1...v0.3.0-alpha.1) (2026-05-26)
 
 
