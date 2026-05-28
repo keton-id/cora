@@ -228,9 +228,9 @@ jobs:
           set -euo pipefail
           VERSION="${TAG#v}"
           chmod +x cora/scripts/render-homebrew.sh
-          cora/scripts/render-homebrew.sh "$VERSION" dist > cr.rb
-          echo "Rendered Formula/cr.rb:"
-          cat cr.rb
+          cora/scripts/render-homebrew.sh "$VERSION" dist > cora.rb
+          echo "Rendered Formula/cora.rb:"
+          cat cora.rb
 
       - name: Push to keton-id/homebrew-tap
         env:
@@ -241,16 +241,16 @@ jobs:
           VERSION="${TAG#v}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/keton-id/homebrew-tap.git" tap
           mkdir -p tap/Formula
-          cp cr.rb tap/Formula/cr.rb
+          cp cora.rb tap/Formula/cora.rb
           cd tap
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
-          if git diff --quiet -- Formula/cr.rb; then
-            echo "Formula/cr.rb unchanged; skipping push."
+          if git diff --quiet -- Formula/cora.rb; then
+            echo "Formula/cora.rb unchanged; skipping push."
             exit 0
           fi
-          git add Formula/cr.rb
-          git commit -m "cr ${VERSION}"
+          git add Formula/cora.rb
+          git commit -m "cora ${VERSION}"
           git push
 
   publish-scoop:
@@ -274,10 +274,10 @@ jobs:
           set -euo pipefail
           VERSION="${TAG#v}"
           chmod +x cora/scripts/render-scoop.sh
-          cora/scripts/render-scoop.sh "$VERSION" dist > cr.json
-          echo "Rendered bucket/cr.json:"
-          cat cr.json
-          python3 -c "import json,sys; json.load(open('cr.json'))"
+          cora/scripts/render-scoop.sh "$VERSION" dist > cora.json
+          echo "Rendered bucket/cora.json:"
+          cat cora.json
+          python3 -c "import json,sys; json.load(open('cora.json'))"
 
       - name: Push to keton-id/scoop-bucket
         env:
@@ -288,14 +288,14 @@ jobs:
           VERSION="${TAG#v}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/keton-id/scoop-bucket.git" bucket
           mkdir -p bucket/bucket
-          cp cr.json bucket/bucket/cr.json
+          cp cora.json bucket/bucket/cora.json
           cd bucket
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
-          if git diff --quiet -- bucket/cr.json; then
-            echo "bucket/cr.json unchanged; skipping push."
+          if git diff --quiet -- bucket/cora.json; then
+            echo "bucket/cora.json unchanged; skipping push."
             exit 0
           fi
-          git add bucket/cr.json
-          git commit -m "cr ${VERSION}"
+          git add bucket/cora.json
+          git commit -m "cora ${VERSION}"
           git push

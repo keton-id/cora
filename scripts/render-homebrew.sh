@@ -49,7 +49,7 @@ SHA_AARCH64_LINUX=$(sha "cr-${VERSION}-aarch64-linux.tar.gz")
 SHA_X86_64_LINUX=$(sha "cr-${VERSION}-x86_64-linux.tar.gz")
 
 cat <<EOF
-class Cr < Formula
+class Cora < Formula
   desc "Zero-knowledge secret injection runtime for AI agents"
   homepage "https://github.com/keton-id/cora"
   version "${VERSION}"
