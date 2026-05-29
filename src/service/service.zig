@@ -132,6 +132,12 @@ pub const Service = struct {
             .audit_logger = cfg.audit_logger,
         };
         svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
+        if (builtin.os.tag == .windows) {
+            svc.emit(.{ .windows_preview_mode = .{
+                .ts_ms = nowMs(svc.io),
+                .message = "tier-1 preview: caller identity bound to socket file ACL inherited from %LOCALAPPDATA%\\cora; peer-process credentials are not verified by the OS kernel",
+            } });
+        }
         return svc;
     }
 

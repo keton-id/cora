@@ -13,6 +13,11 @@ pub const Event = union(enum) {
     secret_injected: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     secret_missing: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     task_end: struct { ts_ms: i64, task: []const u8, exit_code: i32, duration_ms: i64 },
+    // Tier-1 Windows preview notice. Emitted once at Service.start when running
+    // on Windows so operators tailing the audit log see, in-band, that caller
+    // identity is bound to the socket file ACL rather than kernel-verified
+    // peer-process credentials. Contains no secret material.
+    windows_preview_mode: struct { ts_ms: i64, message: []const u8 },
 };
 
 pub const Logger = struct {
@@ -134,6 +139,12 @@ pub fn encode(ev: Event, w: *Io.Writer) !void {
             try s.objectField("duration_ms");
             try s.write(v.duration_ms);
         },
+        .windows_preview_mode => |v| {
+            try s.objectField("ts_ms");
+            try s.write(v.ts_ms);
+            try s.objectField("message");
+            try s.write(v.message);
+        },
     }
     try s.endObject();
 }
@@ -179,6 +190,19 @@ test "encode secret_injected (no value field)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"secret_name\":\"GH_TOKEN\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "secret_value") == null);
+}
+
+test "encode windows_preview_mode" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encode(.{ .windows_preview_mode = .{
+        .ts_ms = 5,
+        .message = "tier-1 preview",
+    } }, &aw.writer);
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"windows_preview_mode\",\"ts_ms\":5,\"message\":\"tier-1 preview\"}",
+        aw.written(),
+    );
 }
 
 test "encode secret_missing distinct from secret_injected" {

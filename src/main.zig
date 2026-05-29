@@ -492,10 +492,16 @@ fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     const sock_path = try cora.service.defaultSocketPath(&sock_buf);
     if (!cora.client.isRunning(io, sock_path)) {
         std.debug.print("status: not running\n", .{});
+        if (builtin.os.tag == .windows) {
+            std.debug.print("  mode: windows-preview (degraded trust model — see SECURITY.md)\n", .{});
+        }
         return;
     }
     const s = try cora.client.status(allocator, io, sock_path);
     std.debug.print("status: running\n  secrets: {d}\n  idle remaining: {d} ms\n", .{ s.secrets_count, s.idle_remaining_ms });
+    if (builtin.os.tag == .windows) {
+        std.debug.print("  mode: windows-preview (degraded trust model — see SECURITY.md)\n", .{});
+    }
 }
 
 fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {
