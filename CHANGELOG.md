@@ -8,6 +8,20 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.6.0-alpha.1](https://github.com/keton-id/cora/compare/v0.5.1-alpha.1...v0.6.0-alpha.1) (2026-05-29)
+
+
+### Features
+
+* **cli:** preview-mode warning banner on sensitive subcommands ([53b1b8c](https://github.com/keton-id/cora/commit/53b1b8c9b01705d41e1a63bf4d2fdb00aa0d91b2))
+* **service:** refuse to start on Windows if socket path escapes LOCALAPPDATA\cora ([ef6dc56](https://github.com/keton-id/cora/commit/ef6dc56bb6b7527232936bc0f28f00d3e50b28c6))
+
+
+### Bug Fixes
+
+* **cli:** mask secret prompt on Windows via SetConsoleMode, fail closed ([2f4d10a](https://github.com/keton-id/cora/commit/2f4d10a2cdcc43cd61d293e8662d4ad942d1eae5))
+* **windows:** cr.exe basename in integration opts + track audit log offset locally ([b45796a](https://github.com/keton-id/cora/commit/b45796afb8e3ee9a8b13d56dba556e5184c50e26))
+
 ## [0.5.1-alpha.1](https://github.com/keton-id/cora/compare/v0.5.0-alpha.1...v0.5.1-alpha.1) (2026-05-28)
 
 
