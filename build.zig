@@ -51,7 +51,12 @@ pub fn build(b: *std.Build) void {
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const integration_opts = b.addOptions();
-    integration_opts.addOption([]const u8, "cr_bin_path", b.getInstallPath(.bin, "cr"));
+    // On Windows the installed artifact is `cr.exe`; `getInstallPath` does not
+    // auto-append the platform executable suffix, so callers must spell it
+    // out. Without this, `dir.access(io, "cr", .{})` fails with FileNotFound
+    // even though `cr.exe` is present alongside.
+    const cr_basename = if (target.result.os.tag == .windows) "cr.exe" else "cr";
+    integration_opts.addOption([]const u8, "cr_bin_path", b.getInstallPath(.bin, cr_basename));
 
     const integration_mod = b.createModule(.{
         .root_source_file = b.path("tests/cli_integration.zig"),

@@ -7,6 +7,12 @@ const build_options = @import("build_options");
 
 const default_path = "cora.zon";
 
+/// Single source of truth for the Windows preview brand. Appears in the
+/// `cr version` tag, the sensitive-subcommand warning banner, and the
+/// `cr status` mode line. Keeping it here prevents the three surfaces from
+/// drifting from each other if the label is ever renamed.
+const windows_preview_label = "windows-preview";
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
@@ -18,8 +24,9 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const sub = args[1];
+    if (isSensitiveSub(sub)) printWindowsPreviewBanner();
     if (std.mem.eql(u8, sub, "version")) {
-        const tag = if (builtin.os.tag == .windows) " [windows-preview]" else "";
+        const tag = if (builtin.os.tag == .windows) " [" ++ windows_preview_label ++ "]" else "";
         std.debug.print("cr {s} (commit {s}, built {s}){s}\n", .{
             build_options.version,
             build_options.commit,
@@ -98,6 +105,30 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("unknown subcommand: {s}\n", .{sub});
     printUsage();
     std.process.exit(1);
+}
+
+/// Subcommands that mutate secret material, policy, or spawn a process with
+/// secrets injected. These are the operator-facing surfaces where the Windows
+/// preview trust model (socket-ACL caller verification only) is materially
+/// different from POSIX, so the user must see a single-line in-band warning
+/// before each invocation.
+fn isSensitiveSub(sub: []const u8) bool {
+    return std.mem.eql(u8, sub, "init") or
+        std.mem.eql(u8, sub, "unlock") or
+        std.mem.eql(u8, sub, "secrets") or
+        std.mem.eql(u8, sub, "policy") or
+        std.mem.eql(u8, sub, "exec");
+}
+
+/// One-line preview banner for the sensitive subcommands. No-op on POSIX so
+/// the same call site is safe to leave unguarded.
+fn printWindowsPreviewBanner() void {
+    if (builtin.os.tag != .windows) return;
+    std.debug.print(
+        "warning: running in " ++ windows_preview_label ++
+            ". caller identity verified by socket ACL only, not by OS peer credentials. see SECURITY.md.\n",
+        .{},
+    );
 }
 
 fn cmdInit(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
@@ -492,10 +523,16 @@ fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     const sock_path = try cora.service.defaultSocketPath(&sock_buf);
     if (!cora.client.isRunning(io, sock_path)) {
         std.debug.print("status: not running\n", .{});
+        if (builtin.os.tag == .windows) {
+            std.debug.print("  mode: " ++ windows_preview_label ++ " (degraded trust model — see SECURITY.md)\n", .{});
+        }
         return;
     }
     const s = try cora.client.status(allocator, io, sock_path);
     std.debug.print("status: running\n  secrets: {d}\n  idle remaining: {d} ms\n", .{ s.secrets_count, s.idle_remaining_ms });
+    if (builtin.os.tag == .windows) {
+        std.debug.print("  mode: windows-preview (degraded trust model — see SECURITY.md)\n", .{});
+    }
 }
 
 fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {
@@ -619,34 +656,58 @@ fn stdinReadByte(out: *[1]u8) !usize {
     }
 }
 
+// Windows console-mode bindings. Stripping ENABLE_ECHO_INPUT is the documented
+// way to suppress terminal echo on Win32 consoles. ENABLE_LINE_INPUT is left
+// alone so the kernel keeps buffering until newline.
+extern "kernel32" fn GetConsoleMode(hConsoleHandle: *anyopaque, lpMode: *u32) callconv(.winapi) i32;
+extern "kernel32" fn SetConsoleMode(hConsoleHandle: *anyopaque, dwMode: u32) callconv(.winapi) i32;
+const ENABLE_ECHO_INPUT: u32 = 0x0004;
+
 /// Read a secret line (passphrase or secret value) from stdin with terminal
 /// echo suppressed. On non-TTY stdin (test pipes, redirected scripts) the
 /// terminal manipulation is skipped silently — the pipe does not echo
-/// anything anyway. Windows masking is deferred; on Windows this is
-/// equivalent to the previous echoing readLine.
+/// anything anyway. On Windows, masking is enforced via SetConsoleMode; if
+/// stdin is a real console but echo cannot be disabled, the call fails closed
+/// rather than silently leaking the secret to the terminal.
 fn readSecret(prompt: []const u8, buf: []u8) ![]const u8 {
     std.debug.print("{s}", .{prompt});
 
-    if (builtin.os.tag != .windows) {
-        // POSIX: disable terminal echo around the read, restore on exit.
-        // The block also brackets the byte loop so masking persists while
-        // we collect input.
-        var saved: ?std.posix.termios = null;
-        defer {
-            if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
-            if (saved != null) std.debug.print("\n", .{});
+    if (builtin.os.tag == .windows) {
+        const h: *anyopaque = @ptrCast(Io.File.stdin().handle);
+        var saved_mode: u32 = 0;
+        const is_console = GetConsoleMode(h, &saved_mode) != 0;
+        if (is_console) {
+            const masked_mode = saved_mode & ~ENABLE_ECHO_INPUT;
+            if (SetConsoleMode(h, masked_mode) == 0) {
+                // Fail closed: refuse to read rather than echo to the terminal.
+                return error.ConsoleMaskingFailed;
+            }
+            defer {
+                _ = SetConsoleMode(h, saved_mode);
+                std.debug.print("\n", .{});
+            }
+            return readLineBytes(buf);
         }
-        if (std.posix.tcgetattr(std.posix.STDIN_FILENO)) |orig| {
-            saved = orig;
-            var t = orig;
-            t.lflag.ECHO = false;
-            std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, t) catch {};
-        } else |_| {
-            // stdin is not a TTY (pipe or redirect); leave terminal alone.
-        }
+        // stdin is a pipe or redirected file — nothing to mask.
         return readLineBytes(buf);
     }
 
+    // POSIX: disable terminal echo around the read, restore on exit.
+    // The block also brackets the byte loop so masking persists while
+    // we collect input.
+    var saved: ?std.posix.termios = null;
+    defer {
+        if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
+        if (saved != null) std.debug.print("\n", .{});
+    }
+    if (std.posix.tcgetattr(std.posix.STDIN_FILENO)) |orig| {
+        saved = orig;
+        var t = orig;
+        t.lflag.ECHO = false;
+        std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, t) catch {};
+    } else |_| {
+        // stdin is not a TTY (pipe or redirect); leave terminal alone.
+    }
     return readLineBytes(buf);
 }
 

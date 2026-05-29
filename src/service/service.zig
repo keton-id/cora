@@ -50,6 +50,35 @@ pub fn defaultSocketPath(buf: []u8) ![]u8 {
     return std.fmt.bufPrint(buf, default_socket_format, .{uid});
 }
 
+/// Validate that `socket_path` is a child of `<local_app_data>\cora\`. Split
+/// out as a pure helper so it can be exercised without touching the live
+/// %LOCALAPPDATA% env on test runners.
+fn checkSocketUnderBase(local_app_data: []const u8, socket_path: []const u8) !void {
+    var expected_buf: [600]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&expected_buf, "{s}\\cora\\", .{local_app_data});
+    if (socket_path.len <= expected.len) return error.UnexpectedSocketLocation;
+    if (!std.ascii.eqlIgnoreCase(socket_path[0..expected.len], expected)) {
+        return error.UnexpectedSocketLocation;
+    }
+}
+
+/// Verify on Windows that the AF_UNIX socket path resolves under
+/// `%LOCALAPPDATA%\cora`. The Tier 1 trust model relies on the user-only
+/// NTFS ACL inherited from %LOCALAPPDATA%; if the path is elsewhere (env
+/// hijack, explicit override into a world-writable directory, etc.) the
+/// assumption is broken and the service must refuse to start. No-op on
+/// POSIX where socket permissions are enforced via chmod 0600 instead.
+fn verifyWindowsSocketParent(socket_path: []const u8) !void {
+    if (builtin.os.tag != .windows) return;
+    const name = std.unicode.utf8ToUtf16LeStringLiteral("LOCALAPPDATA");
+    var wide: [260]u16 = undefined;
+    const n = GetEnvironmentVariableW(name, &wide, wide.len);
+    if (n == 0 or n >= wide.len) return error.NoLocalAppData;
+    var base_buf: [520]u8 = undefined;
+    const base_len = try std.unicode.utf16LeToUtf8(&base_buf, wide[0..n]);
+    return checkSocketUnderBase(base_buf[0..base_len], socket_path);
+}
+
 /// Ensure the parent directory of `socket_path` exists on Windows.
 /// AF_UNIX bind fails if `%LOCALAPPDATA%\cora` is missing. No-op on POSIX
 /// (we use /tmp which always exists).
@@ -84,6 +113,7 @@ pub const Service = struct {
     audit_logger: ?*audit.Logger,
 
     pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
+        try verifyWindowsSocketParent(cfg.socket_path);
         ensureParentDir(cfg.socket_path);
         removeSocketIfStale(io, cfg.socket_path);
         const ua = try net.UnixAddress.init(cfg.socket_path);
@@ -102,6 +132,12 @@ pub const Service = struct {
             .audit_logger = cfg.audit_logger,
         };
         svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
+        if (builtin.os.tag == .windows) {
+            svc.emit(.{ .windows_preview_mode = .{
+                .ts_ms = nowMs(svc.io),
+                .message = "tier-1 preview: caller identity bound to socket file ACL inherited from %LOCALAPPDATA%\\cora; peer-process credentials are not verified by the OS kernel",
+            } });
+        }
         return svc;
     }
 
@@ -346,6 +382,40 @@ fn restrictSocketPermissions(path: []const u8) !void {
     if (builtin.os.tag == .windows) return;
     const path_z = try std.posix.toPosixPath(path);
     if (std.c.chmod(&path_z, 0o600) != 0) return error.SocketChmodFailed;
+}
+
+test "checkSocketUnderBase accepts path inside cora subdir" {
+    try checkSocketUnderBase(
+        "C:\\Users\\u\\AppData\\Local",
+        "C:\\Users\\u\\AppData\\Local\\cora\\cora.sock",
+    );
+}
+
+test "checkSocketUnderBase rejects path outside cora subdir" {
+    try std.testing.expectError(
+        error.UnexpectedSocketLocation,
+        checkSocketUnderBase(
+            "C:\\Users\\u\\AppData\\Local",
+            "C:\\Temp\\cora.sock",
+        ),
+    );
+}
+
+test "checkSocketUnderBase compares case-insensitively" {
+    try checkSocketUnderBase(
+        "C:\\users\\u\\appdata\\local",
+        "C:\\Users\\u\\AppData\\Local\\CORA\\cora.sock",
+    );
+}
+
+test "checkSocketUnderBase rejects bare base with no child" {
+    try std.testing.expectError(
+        error.UnexpectedSocketLocation,
+        checkSocketUnderBase(
+            "C:\\Users\\u\\AppData\\Local",
+            "C:\\Users\\u\\AppData\\Local\\cora\\",
+        ),
+    );
 }
 
 test "defaultSocketPath builds path" {

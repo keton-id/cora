@@ -10,6 +10,7 @@
 //! present before these tests run.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const opts = @import("integration_options");
 
@@ -156,6 +157,124 @@ test "secrets set preserves policy (regression: finding 1)" {
     try std.testing.expect(std.mem.indexOf(u8, show.stderr, "tasks (1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, show.stderr, "demo") != null);
     try std.testing.expect(std.mem.indexOf(u8, show.stderr, "API_KEY") != null);
+}
+
+// --- Platform-guarded contracts -------------------------------------------
+// The tests below pin behavior that is intentionally different per OS, so a
+// silent drift on one platform cannot pass as success on the others. Each
+// test runs on exactly one OS family and skips on the rest.
+
+test "cr version advertises windows-preview tag (Windows-only)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    const out = if (res.stdout.len > 0) res.stdout else res.stderr;
+    try std.testing.expect(std.mem.indexOf(u8, out, "[windows-preview]") != null);
+}
+
+test "cr version omits windows-preview tag (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    const out = if (res.stdout.len > 0) res.stdout else res.stderr;
+    try std.testing.expect(std.mem.indexOf(u8, out, "[windows-preview]") == null);
+}
+
+test "cr status surfaces windows-preview mode line (Windows-only)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Service is not running in this fresh tmp dir, so we hit the
+    // "not running" branch — the mode line is appended unconditionally on
+    // Windows so operators still see the trust-model disclaimer.
+    var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
+    try std.testing.expect(std.mem.indexOf(u8, out, "mode: windows-preview") != null);
+}
+
+test "cr status omits windows-preview mode line (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
+    try std.testing.expect(std.mem.indexOf(u8, out, "mode: windows-preview") == null);
+}
+
+test "cr policy show emits windows-preview banner (Windows-only)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var show = try policyShow(allocator, io, tmp.dir);
+    defer show.deinit(allocator);
+    try std.testing.expect(show.exitOk());
+
+    const out = if (show.stderr.len > 0) show.stderr else show.stdout;
+    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") != null);
+}
+
+test "cr policy show omits windows-preview banner (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var show = try policyShow(allocator, io, tmp.dir);
+    defer show.deinit(allocator);
+    try std.testing.expect(show.exitOk());
+
+    const out = if (show.stderr.len > 0) show.stderr else show.stdout;
+    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") == null);
+}
+
+test "cr version never emits sensitive-sub banner (cross-platform)" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
+    // Banner is only printed for sensitive subs; `version` is not one of
+    // them on any platform.
+    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") == null);
 }
 
 test "policy allow preserves tasks (regression: finding 2)" {

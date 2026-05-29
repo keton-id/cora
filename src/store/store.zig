@@ -283,6 +283,31 @@ test "writeFile leaves no .tmp sibling on success" {
     );
 }
 
+// Regression for WINDOWS-AUDIT.md claim #2: rewrite of an existing target must
+// succeed on every supported platform. Zig 0.16's Io.Dir.rename invokes
+// NtSetInformationFile with REPLACE_IF_EXISTS=true on Windows, so writeFile is
+// already atomic-replace there; this test pins that contract so a stdlib
+// regression cannot silently break Windows mutation flows (secrets set/delete,
+// policy edits).
+test "writeFile replaces existing target across platforms" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = "cora.zon";
+    try writeFile(std.testing.io, tmp.dir, path, "first payload");
+    try writeFile(std.testing.io, tmp.dir, path, "second payload");
+
+    const got = try tmp.dir.readFileAlloc(std.testing.io, path, allocator, .limited(4096));
+    defer allocator.free(got);
+    try std.testing.expectEqualStrings("second payload", got);
+
+    try std.testing.expectError(
+        error.FileNotFound,
+        tmp.dir.access(std.testing.io, "cora.zon.tmp", .{}),
+    );
+}
+
 test "saveSecrets preserves config_bytes across mutation" {
     const allocator = std.testing.allocator;
     var tmp = std.testing.tmpDir(.{});

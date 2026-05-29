@@ -13,6 +13,11 @@ pub const Event = union(enum) {
     secret_injected: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     secret_missing: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     task_end: struct { ts_ms: i64, task: []const u8, exit_code: i32, duration_ms: i64 },
+    // Tier-1 Windows preview notice. Emitted once at Service.start when running
+    // on Windows so operators tailing the audit log see, in-band, that caller
+    // identity is bound to the socket file ACL rather than kernel-verified
+    // peer-process credentials. Contains no secret material.
+    windows_preview_mode: struct { ts_ms: i64, message: []const u8 },
 };
 
 pub const Logger = struct {
@@ -21,6 +26,12 @@ pub const Logger = struct {
     file: ?Io.File,
     path: []u8,
     enabled: bool,
+    // Tracked append offset. Windows `createFile` does not grant
+    // FILE_READ_ATTRIBUTES on the resulting handle, so calling `file.length()`
+    // on the write handle fails with ACCESS_DENIED at every log event. We
+    // seed the offset once from a separate read-only probe and advance it
+    // ourselves per write, avoiding the stat round-trip entirely.
+    offset: u64,
 
     pub fn init(allocator: std.mem.Allocator, io: Io, path: []const u8, enabled: bool) !Logger {
         var logger: Logger = .{
@@ -29,6 +40,7 @@ pub const Logger = struct {
             .file = null,
             .path = try allocator.dupe(u8, path),
             .enabled = enabled,
+            .offset = 0,
         };
         if (enabled) try logger.open();
         return logger;
@@ -48,10 +60,24 @@ pub const Logger = struct {
                 else => return err,
             };
         }
+
+        // Probe the existing size with a separate read handle so the
+        // subsequent write handle does not need FILE_READ_ATTRIBUTES.
+        // Missing file == fresh log == offset 0.
+        const initial_size: u64 = blk: {
+            var probe = cwd.openFile(self.io, self.path, .{}) catch |err| switch (err) {
+                error.FileNotFound => break :blk 0,
+                else => return err,
+            };
+            defer probe.close(self.io);
+            break :blk probe.length(self.io) catch 0;
+        };
+
         const f = try cwd.createFile(self.io, self.path, .{ .exclusive = false, .truncate = false });
         if (@hasDecl(std.posix, "fchmod")) {
             std.posix.fchmod(f.handle, 0o600) catch {};
         }
+        self.offset = initial_size;
         self.file = f;
     }
 
@@ -63,8 +89,9 @@ pub const Logger = struct {
         defer buf.deinit();
         try encode(ev, &buf.writer);
         try buf.writer.writeByte('\n');
-        const end = try self.file.?.length(self.io);
-        try self.file.?.writePositionalAll(self.io, buf.written(), end);
+        const bytes = buf.written();
+        try self.file.?.writePositionalAll(self.io, bytes, self.offset);
+        self.offset += bytes.len;
     }
 };
 
@@ -134,6 +161,12 @@ pub fn encode(ev: Event, w: *Io.Writer) !void {
             try s.objectField("duration_ms");
             try s.write(v.duration_ms);
         },
+        .windows_preview_mode => |v| {
+            try s.objectField("ts_ms");
+            try s.write(v.ts_ms);
+            try s.objectField("message");
+            try s.write(v.message);
+        },
     }
     try s.endObject();
 }
@@ -179,6 +212,19 @@ test "encode secret_injected (no value field)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"secret_name\":\"GH_TOKEN\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
     try std.testing.expect(std.mem.indexOf(u8, out, "secret_value") == null);
+}
+
+test "encode windows_preview_mode" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encode(.{ .windows_preview_mode = .{
+        .ts_ms = 5,
+        .message = "tier-1 preview",
+    } }, &aw.writer);
+    try std.testing.expectEqualStrings(
+        "{\"kind\":\"windows_preview_mode\",\"ts_ms\":5,\"message\":\"tier-1 preview\"}",
+        aw.written(),
+    );
 }
 
 test "encode secret_missing distinct from secret_injected" {
