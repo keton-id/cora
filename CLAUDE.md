@@ -18,7 +18,7 @@ This is an **encrypted-file-based, agent-aware, ephemeral credential whisperer.*
 
 CLI command: `cr`
 License: AGPL-3.0
-Status: pre-alpha · macOS + Linux · Zig 0.16
+Status: pre-alpha · macOS + Linux · Windows (preview, Tier 1) · Zig 0.16
 
 ---
 
@@ -34,7 +34,7 @@ Cora's differentiators:
 1. **Portable** — one encrypted `cora.zon` file, carry it anywhere: laptop, server, CI/CD, container
 2. **Passphrase-derived encryption** — Argon2id → XChaCha20-Poly1305, human holds the key
 3. **Service model** — `cr unlock` decrypts into memory, background service serves secrets, `cr lock` zeroes everything
-4. **Caller identity verified at kernel level** — `SO_PEERCRED` (Linux), `LOCAL_PEERPID` (macOS), Named Pipe PID (Windows — pending)
+4. **Caller identity verified at kernel level** — `SO_PEERCRED` (Linux), `LOCAL_PEERPID` (macOS), NTFS ACL trust on Windows preview (Tier 1; Named Pipe DACL planned for Tier 2)
 5. **Agent never holds values** — only names, injection goes directly into subprocess env
 6. **Zero infra** — single binary, no cloud, no daemon unless user wants one via systemd/launchd
 7. **Transport plugins** — OS keychain, 1Password, Vault, Infisical etc. are future community plugins, not core
@@ -126,11 +126,12 @@ Cora does not trust application-level tokens. It trusts the OS.
 | -------- | ---------------------------------------------- | ------------------------------------------ |
 | Linux    | `SO_PEERCRED` via `getsockopt`                 | PID, UID, GID — kernel-provided            |
 | macOS    | `LOCAL_PEERPID` (SOL_LOCAL=0, opt=0x002)       | PID; uid via `getuid()` (same-user socket) |
-| Windows  | not yet implemented                            | — (deferred)                               |
+| Windows  | Tier 1: trust user-only NTFS ACL on `%LOCALAPPDATA%\cora\` (AF_UNIX, no peer PID). Tier 2 (planned): Named Pipe DACL + `GetNamedPipeClientProcessId` | binary path via `QueryFullProcessImageNameW(GetCurrentProcessId())` |
 
 Binary path resolved per OS:
 - Linux: `readlink /proc/<pid>/exe`
 - macOS: `proc_pidpath(pid, ...)` (extern from libproc)
+- Windows: `QueryFullProcessImageNameW(OpenProcess(...))` (self-pid only in Tier 1)
 
 Matched against `Policy.allowed_callers` from decrypted `cora.zon` config block.
 Empty `allowed_callers` = dev-mode allow-all.
@@ -181,12 +182,13 @@ cora/
 │   ├── identity/
 │   │   ├── identity.zig      ← CallerIdentity + per-OS dispatch
 │   │   ├── linux.zig         ← SO_PEERCRED + /proc/<pid>/exe
-│   │   └── macos.zig         ← LOCAL_PEERPID + proc_pidpath
+│   │   ├── macos.zig         ← LOCAL_PEERPID + proc_pidpath
+│   │   └── windows.zig       ← Tier 1: GetCurrentProcessId + QueryFullProcessImageNameW
 │   ├── policy/
 │   │   └── policy.zig        ← Policy { allowed_callers, idle_timeout_ms, tasks } via std.zon
 │   └── tui/
-│       └── menu.zig          ← ANSI-color menu loop (status / audit / secrets / lock)
-└── tests/                    ← embedded as `test` blocks per file; 51/51 passing
+│       └── menu.zig          ← vaxis pane-based UI (dashboard / audit / secrets / lock + modals)
+└── tests/                    ← embedded as `test` blocks per file
 ```
 
 Audit log lives at `~/.cora/audit.jsonl` (created on first `cr unlock`).
@@ -264,19 +266,20 @@ cr audit show [--task NAME]              # full log, optional filter
 cr verify --pid PID                      # resolve binary path for a pid
 
 # Interactive
-cr tui                                   # ANSI menu loop
+cr tui                                   # vaxis pane-based UI
 ```
 
 ---
 
-## TUI (vaxis 0.6.0 + ANSI escapes)
+## TUI (vaxis 0.6.0)
 
-Current `cr tui` = ANSI-color menu loop in `src/tui/menu.zig`.
-Status panel + 4 actions (status / audit / secrets / lock) + quit.
+Current `cr tui` = full vaxis pane-based UI in `src/tui/menu.zig` (~700 LOC).
+Views: dashboard / audit / secrets / lock. Modals: confirm-lock, passphrase
+(masked). Keyboard-driven navigation between panes.
 
-`vaxis` is wired into the build (`comptime { _ = vaxis.logo; }` keeps the dep alive)
-but advanced widgets (scrollable audit, masked TTY input via vaxis cursor, full-screen
-onboard wizard) are deferred for a polish iteration.
+Run path is isolated — `cr exec` and `cr unlock` do **not** depend on the vaxis
+render layer, so secrets-handling code stays decoupled from the TUI binary
+surface.
 
 ---
 
@@ -351,15 +354,15 @@ Plugin interface will allow importing secrets FROM these sources INTO `cora.zon`
 
 ## Competitive Positioning
 
-|                   | Cora                   | agentsecrets | HashiCorp Vault | direnv    |
-| ----------------- | ---------------------- | ------------ | --------------- | --------- |
-| Language          | **Zig**                | Go           | Go              | Shell     |
-| Secret storage    | **Encrypted file**     | Cloud/local  | Cloud           | Plaintext |
-| Portable          | **Yes — one file**     | No           | No              | Partial   |
-| Memory zeroing    | **`secureZero`**       | GC           | GC              | N/A       |
-| Caller verified   | **OS kernel**          | Nothing      | Token           | Nothing   |
-| Infra required    | **None**               | None         | Heavy           | None      |
-| Single binary     | **Yes**                | No           | No              | N/A       |
-| Interactive TUI   | **Yes (ANSI menu)**    | No           | No              | No        |
-| Agent gets value? | **Never**              | Never        | Depends         | Yes       |
-| MCP server        | **No — by design**     | No           | No              | No        |
+|                   | Cora                   | HashiCorp Vault |
+| ----------------- | ---------------------- | --------------- |
+| Language          | **Zig**                | Go              |
+| Secret storage    | **Encrypted file**     | Cloud/local     |
+| Portable          | **Yes — one file**     | No              |
+| Memory zeroing    | **`secureZero`**       | GC              |
+| Caller verified   | **OS kernel**          | Nothing         |
+| Infra required    | **None**               | None            |
+| Single binary     | **Yes**                | No              |
+| Interactive TUI   | **Yes (pane-based)**   | No              |
+| Agent gets value? | **Never**              | Depends         |
+| MCP server        | **No — by design**     | No              |
