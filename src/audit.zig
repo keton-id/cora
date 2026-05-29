@@ -26,6 +26,12 @@ pub const Logger = struct {
     file: ?Io.File,
     path: []u8,
     enabled: bool,
+    // Tracked append offset. Windows `createFile` does not grant
+    // FILE_READ_ATTRIBUTES on the resulting handle, so calling `file.length()`
+    // on the write handle fails with ACCESS_DENIED at every log event. We
+    // seed the offset once from a separate read-only probe and advance it
+    // ourselves per write, avoiding the stat round-trip entirely.
+    offset: u64,
 
     pub fn init(allocator: std.mem.Allocator, io: Io, path: []const u8, enabled: bool) !Logger {
         var logger: Logger = .{
@@ -34,6 +40,7 @@ pub const Logger = struct {
             .file = null,
             .path = try allocator.dupe(u8, path),
             .enabled = enabled,
+            .offset = 0,
         };
         if (enabled) try logger.open();
         return logger;
@@ -53,10 +60,24 @@ pub const Logger = struct {
                 else => return err,
             };
         }
+
+        // Probe the existing size with a separate read handle so the
+        // subsequent write handle does not need FILE_READ_ATTRIBUTES.
+        // Missing file == fresh log == offset 0.
+        const initial_size: u64 = blk: {
+            var probe = cwd.openFile(self.io, self.path, .{}) catch |err| switch (err) {
+                error.FileNotFound => break :blk 0,
+                else => return err,
+            };
+            defer probe.close(self.io);
+            break :blk probe.length(self.io) catch 0;
+        };
+
         const f = try cwd.createFile(self.io, self.path, .{ .exclusive = false, .truncate = false });
         if (@hasDecl(std.posix, "fchmod")) {
             std.posix.fchmod(f.handle, 0o600) catch {};
         }
+        self.offset = initial_size;
         self.file = f;
     }
 
@@ -68,8 +89,9 @@ pub const Logger = struct {
         defer buf.deinit();
         try encode(ev, &buf.writer);
         try buf.writer.writeByte('\n');
-        const end = try self.file.?.length(self.io);
-        try self.file.?.writePositionalAll(self.io, buf.written(), end);
+        const bytes = buf.written();
+        try self.file.?.writePositionalAll(self.io, bytes, self.offset);
+        self.offset += bytes.len;
     }
 };
 
