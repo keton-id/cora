@@ -227,6 +227,56 @@ test "cr status omits windows-preview mode line (POSIX-only)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "mode: windows-preview") == null);
 }
 
+test "cr policy show emits windows-preview banner (Windows-only)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var show = try policyShow(allocator, io, tmp.dir);
+    defer show.deinit(allocator);
+    try std.testing.expect(show.exitOk());
+
+    const out = if (show.stderr.len > 0) show.stderr else show.stdout;
+    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") != null);
+}
+
+test "cr policy show omits windows-preview banner (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var show = try policyShow(allocator, io, tmp.dir);
+    defer show.deinit(allocator);
+    try std.testing.expect(show.exitOk());
+
+    const out = if (show.stderr.len > 0) show.stderr else show.stdout;
+    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") == null);
+}
+
+test "cr version never emits sensitive-sub banner (cross-platform)" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
+    // Banner is only printed for sensitive subs; `version` is not one of
+    // them on any platform.
+    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") == null);
+}
+
 test "policy allow preserves tasks (regression: finding 2)" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

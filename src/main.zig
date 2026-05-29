@@ -18,6 +18,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const sub = args[1];
+    if (isSensitiveSub(sub)) printWindowsPreviewBanner();
     if (std.mem.eql(u8, sub, "version")) {
         const tag = if (builtin.os.tag == .windows) " [windows-preview]" else "";
         std.debug.print("cr {s} (commit {s}, built {s}){s}\n", .{
@@ -98,6 +99,29 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("unknown subcommand: {s}\n", .{sub});
     printUsage();
     std.process.exit(1);
+}
+
+/// Subcommands that mutate secret material, policy, or spawn a process with
+/// secrets injected. These are the operator-facing surfaces where the Windows
+/// preview trust model (socket-ACL caller verification only) is materially
+/// different from POSIX, so the user must see a single-line in-band warning
+/// before each invocation.
+fn isSensitiveSub(sub: []const u8) bool {
+    return std.mem.eql(u8, sub, "init") or
+        std.mem.eql(u8, sub, "unlock") or
+        std.mem.eql(u8, sub, "secrets") or
+        std.mem.eql(u8, sub, "policy") or
+        std.mem.eql(u8, sub, "exec");
+}
+
+/// One-line preview banner for the sensitive subcommands. No-op on POSIX so
+/// the same call site is safe to leave unguarded.
+fn printWindowsPreviewBanner() void {
+    if (builtin.os.tag != .windows) return;
+    std.debug.print(
+        "warning: running in windows-preview. caller identity verified by socket ACL only, not by OS peer credentials. see SECURITY.md.\n",
+        .{},
+    );
 }
 
 fn cmdInit(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
