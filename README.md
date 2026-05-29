@@ -11,9 +11,6 @@
 Your agent never holds secret values. Not in memory. Not on disk. Not ever.
 One encrypted file. One passphrase. Carry it anywhere.
 
-> **Status:** Pre-alpha · macOS + Linux · Windows (preview, Tier 1) · AGPL-3.0
-> Built against Zig 0.16. Build from source until v0.1 binary release cuts.
-
 ---
 
 ## The Problem
