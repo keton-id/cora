@@ -1,0 +1,21 @@
+# Force LF line endings for all text files in the repo, including on Windows
+# checkouts. `zig fmt --check` rejects CRLF, so without this the Windows CI
+# job fails on every source file when git's autocrlf default rewrites endings
+# at checkout time.
+* text=auto eol=lf
+
+# Explicit per-extension entries so a future contributor adding a new file
+# type does not have to remember the default.
+*.zig   text eol=lf
+*.zon   text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+*.json  text eol=lf
+*.sh    text eol=lf
+
+# Binaries: never touch.
+*.png   binary
+*.jpg   binary
+*.ico   binary
