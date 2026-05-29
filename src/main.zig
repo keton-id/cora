@@ -619,34 +619,58 @@ fn stdinReadByte(out: *[1]u8) !usize {
     }
 }
 
+// Windows console-mode bindings. Stripping ENABLE_ECHO_INPUT is the documented
+// way to suppress terminal echo on Win32 consoles. ENABLE_LINE_INPUT is left
+// alone so the kernel keeps buffering until newline.
+extern "kernel32" fn GetConsoleMode(hConsoleHandle: *anyopaque, lpMode: *u32) callconv(.winapi) i32;
+extern "kernel32" fn SetConsoleMode(hConsoleHandle: *anyopaque, dwMode: u32) callconv(.winapi) i32;
+const ENABLE_ECHO_INPUT: u32 = 0x0004;
+
 /// Read a secret line (passphrase or secret value) from stdin with terminal
 /// echo suppressed. On non-TTY stdin (test pipes, redirected scripts) the
 /// terminal manipulation is skipped silently — the pipe does not echo
-/// anything anyway. Windows masking is deferred; on Windows this is
-/// equivalent to the previous echoing readLine.
+/// anything anyway. On Windows, masking is enforced via SetConsoleMode; if
+/// stdin is a real console but echo cannot be disabled, the call fails closed
+/// rather than silently leaking the secret to the terminal.
 fn readSecret(prompt: []const u8, buf: []u8) ![]const u8 {
     std.debug.print("{s}", .{prompt});
 
-    if (builtin.os.tag != .windows) {
-        // POSIX: disable terminal echo around the read, restore on exit.
-        // The block also brackets the byte loop so masking persists while
-        // we collect input.
-        var saved: ?std.posix.termios = null;
-        defer {
-            if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
-            if (saved != null) std.debug.print("\n", .{});
+    if (builtin.os.tag == .windows) {
+        const h: *anyopaque = @ptrCast(Io.File.stdin().handle);
+        var saved_mode: u32 = 0;
+        const is_console = GetConsoleMode(h, &saved_mode) != 0;
+        if (is_console) {
+            const masked_mode = saved_mode & ~ENABLE_ECHO_INPUT;
+            if (SetConsoleMode(h, masked_mode) == 0) {
+                // Fail closed: refuse to read rather than echo to the terminal.
+                return error.ConsoleMaskingFailed;
+            }
+            defer {
+                _ = SetConsoleMode(h, saved_mode);
+                std.debug.print("\n", .{});
+            }
+            return readLineBytes(buf);
         }
-        if (std.posix.tcgetattr(std.posix.STDIN_FILENO)) |orig| {
-            saved = orig;
-            var t = orig;
-            t.lflag.ECHO = false;
-            std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, t) catch {};
-        } else |_| {
-            // stdin is not a TTY (pipe or redirect); leave terminal alone.
-        }
+        // stdin is a pipe or redirected file — nothing to mask.
         return readLineBytes(buf);
     }
 
+    // POSIX: disable terminal echo around the read, restore on exit.
+    // The block also brackets the byte loop so masking persists while
+    // we collect input.
+    var saved: ?std.posix.termios = null;
+    defer {
+        if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
+        if (saved != null) std.debug.print("\n", .{});
+    }
+    if (std.posix.tcgetattr(std.posix.STDIN_FILENO)) |orig| {
+        saved = orig;
+        var t = orig;
+        t.lflag.ECHO = false;
+        std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, t) catch {};
+    } else |_| {
+        // stdin is not a TTY (pipe or redirect); leave terminal alone.
+    }
     return readLineBytes(buf);
 }
 
