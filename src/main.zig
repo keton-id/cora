@@ -7,6 +7,12 @@ const build_options = @import("build_options");
 
 const default_path = "cora.zon";
 
+/// Single source of truth for the Windows preview brand. Appears in the
+/// `cr version` tag, the sensitive-subcommand warning banner, and the
+/// `cr status` mode line. Keeping it here prevents the three surfaces from
+/// drifting from each other if the label is ever renamed.
+const windows_preview_label = "windows-preview";
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
@@ -20,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     const sub = args[1];
     if (isSensitiveSub(sub)) printWindowsPreviewBanner();
     if (std.mem.eql(u8, sub, "version")) {
-        const tag = if (builtin.os.tag == .windows) " [windows-preview]" else "";
+        const tag = if (builtin.os.tag == .windows) " [" ++ windows_preview_label ++ "]" else "";
         std.debug.print("cr {s} (commit {s}, built {s}){s}\n", .{
             build_options.version,
             build_options.commit,
@@ -119,7 +125,8 @@ fn isSensitiveSub(sub: []const u8) bool {
 fn printWindowsPreviewBanner() void {
     if (builtin.os.tag != .windows) return;
     std.debug.print(
-        "warning: running in windows-preview. caller identity verified by socket ACL only, not by OS peer credentials. see SECURITY.md.\n",
+        "warning: running in " ++ windows_preview_label ++
+            ". caller identity verified by socket ACL only, not by OS peer credentials. see SECURITY.md.\n",
         .{},
     );
 }
@@ -517,7 +524,7 @@ fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     if (!cora.client.isRunning(io, sock_path)) {
         std.debug.print("status: not running\n", .{});
         if (builtin.os.tag == .windows) {
-            std.debug.print("  mode: windows-preview (degraded trust model — see SECURITY.md)\n", .{});
+            std.debug.print("  mode: " ++ windows_preview_label ++ " (degraded trust model — see SECURITY.md)\n", .{});
         }
         return;
     }
