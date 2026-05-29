@@ -71,7 +71,8 @@ jobs:
       - name: Rewrite stable section in CHANGELOG.md
         run: |
           python3 .github/scripts/enrich_changelog.py \
-            "${{ steps.resolve.outputs.tag }}" /tmp/notes.md CHANGELOG.md
+            "${{ steps.resolve.outputs.tag }}" /tmp/notes.md CHANGELOG.md \
+            "${{ steps.resolve.outputs.prev }}" "${{ github.repository }}"
 
       - name: Open PR with enriched CHANGELOG
         uses: peter-evans/create-pull-request@v6
