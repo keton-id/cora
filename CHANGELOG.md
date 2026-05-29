@@ -8,6 +8,14 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.6.1-alpha.1](https://github.com/keton-id/cora/compare/v0.6.0-alpha.1...v0.6.1-alpha.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **ci:** insert stable CHANGELOG heading when missing ([fa043c0](https://github.com/keton-id/cora/commit/fa043c08c4fe1b66875033ed795f0e8ab61a7bff))
+* **ci:** insert stable CHANGELOG heading when missing, pass prev/repo ([cb18d89](https://github.com/keton-id/cora/commit/cb18d89b231f0f69858ab11d9d184e024ee5848a))
+
 ## [0.6.0-alpha.1](https://github.com/keton-id/cora/compare/v0.5.1-alpha.1...v0.6.0-alpha.1) (2026-05-29)
 
 
