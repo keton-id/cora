@@ -8,6 +8,19 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.6.1](https://github.com/keton-id/cora/compare/v0.6.0...v0.6.1) (2026-05-29)
+
+## What's Changed
+* fix(ci): insert stable CHANGELOG heading when missing by @mulhamna in https://github.com/keton-id/cora/pull/22
+* chore(main): release 0.6.1-alpha.1 by @mulhamna in https://github.com/keton-id/cora/pull/23
+
+
+**Full Changelog**: https://github.com/keton-id/cora/compare/v0.6.0...v0.6.1
+
+### Contributors
+
+@mulhamna
+
 ## [0.6.1-alpha.1](https://github.com/keton-id/cora/compare/v0.6.0-alpha.1...v0.6.1-alpha.1) (2026-05-29)
 
 
