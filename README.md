@@ -83,7 +83,7 @@ later picks up new stable releases. The
 is updated automatically by Cora's release pipeline on every stable
 tag. Pre-release alpha tags are **not** pushed to the tap.
 
-### C. Scoop (Windows preview)
+### C. Scoop (Windows)
 
 ```powershell
 scoop bucket add keton-id https://github.com/keton-id/scoop-bucket
@@ -91,20 +91,38 @@ scoop install cora
 ```
 
 The package name is `cora`; the installed binary is `cr.exe`. `scoop update cora`
-later picks up new stable releases. The
+picks up new stable releases. The
 [`keton-id/scoop-bucket`](https://github.com/keton-id/scoop-bucket) repo
-is updated automatically by Cora's release pipeline on every stable
-tag. See *Windows preview limitations* below for the current trust
-model on Windows.
+is updated automatically on every stable tag.
 
-### D. Manual download from GitHub Releases
-
-Grab the tarball for your platform from the
-[Releases page](https://github.com/keton-id/cora/releases) and verify the
-checksum yourself:
+### D. npm — `@keton-id/cora`
 
 ```bash
-VERSION=0.1.0-alpha.1
+npm i -g @keton-id/cora
+```
+
+Or one-shot via `npx`:
+
+```bash
+npx @keton-id/cora --help
+```
+
+Ships a single npm package that bundles prebuilt `cr` binaries for
+every supported platform — macOS x64/arm64, Linux x64/arm64, Windows
+x64/arm64. A tiny JS launcher (`bin/cr.js`) picks the matching binary
+at runtime. No postinstall download, no native node addon. Only
+stable releases publish to npm; alphas stay on GitHub Releases.
+
+### E. Manual download from GitHub Releases
+
+Grab the archive for your platform from the
+[Releases page](https://github.com/keton-id/cora/releases) and verify
+the checksum yourself.
+
+POSIX (tarball):
+
+```bash
+VERSION=1.0.0
 TARGET=aarch64-macos        # or x86_64-macos / x86_64-linux / aarch64-linux
 curl -fsSLO "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-${TARGET}.tar.gz"
 curl -fsSLO "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-${TARGET}.tar.gz.sha256"
@@ -113,36 +131,18 @@ tar xzf "cr-${VERSION}-${TARGET}.tar.gz"
 sudo install -m 0755 cr /usr/local/bin/
 ```
 
-### Windows (preview)
-
-Windows builds ship as `cr-<version>-<arch>-windows-preview.zip` from the
-[Releases page](https://github.com/keton-id/cora/releases). Extract `cr.exe`
-somewhere on `PATH`.
+Windows (zip):
 
 ```powershell
-$VERSION = "0.1.3-alpha.1"
+$VERSION = "1.0.0"
 $TARGET  = "x86_64-windows"   # or aarch64-windows
-Invoke-WebRequest "https://github.com/keton-id/cora/releases/download/v$VERSION/cr-$VERSION-$TARGET-preview.zip" -OutFile cr.zip
+Invoke-WebRequest "https://github.com/keton-id/cora/releases/download/v$VERSION/cr-$VERSION-$TARGET.zip" -OutFile cr.zip
 Expand-Archive cr.zip -DestinationPath $Env:LOCALAPPDATA\cora\bin
 $Env:PATH += ";$Env:LOCALAPPDATA\cora\bin"
 cr version
 ```
 
-**Windows preview limitations (Tier 1):**
-
-- Caller identity is **not** kernel-verified. AF_UNIX on Windows does not
-  expose peer PID; the service trusts the user-only NTFS ACL inherited from
-  `%LOCALAPPDATA%\cora\`. Do **not** run `cr` on a shared Windows machine
-  with untrusted local users until Tier 2.
-- `cr unlock` runs **foreground only**. Background daemonize via
-  `CreateProcessW(DETACHED_PROCESS)` is not yet wired.
-- Socket path is `%LOCALAPPDATA%\cora\cora.sock`. The directory is created
-  on first `cr unlock`.
-
-Tier 2 (post-1.0) will add Named Pipe IPC, explicit DACL hardening on
-`cora.zon`, and Authenticode-based caller verification.
-
-### E. Build from source
+### F. Build from source
 
 Requires Zig 0.16+.
 
