@@ -58,10 +58,12 @@ cr help <subcommand> <action> # deep
 
 ## Versioning
 
-Releases follow conventional commits via release-please. Stable releases publish under the `latest` dist-tag; pre-1.0 alphas publish under `alpha`. Pin a specific build with `@<version>` to keep an environment reproducible:
+Only **stable** releases publish to npm, matching the Homebrew and Scoop channels. Pre-1.0 alphas remain on GitHub Releases only — install them by downloading the tarball/zip directly, or via `cargo install`/`go install`-style scripts against the release URL.
+
+Pin a specific stable build with `@<version>` to keep an environment reproducible:
 
 ```sh
-npm i -g @keton-id/cora@0.6.1-alpha.1
+npm i -g @keton-id/cora@1.0.0
 ```
 
 ## License

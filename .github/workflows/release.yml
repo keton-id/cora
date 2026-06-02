@@ -223,6 +223,7 @@ jobs:
   publish-npm:
     name: publish npm package
     needs: [resolve, publish]
+    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -260,14 +261,9 @@ jobs:
         working-directory: cora/npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         run: |
           set -euo pipefail
-          if [ "$PRERELEASE" = "true" ]; then
-            npm publish --access public --tag alpha
-          else
-            npm publish --access public
-          fi
+          npm publish --access public
 
   publish-homebrew:
     name: publish homebrew formula
