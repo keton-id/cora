@@ -8,6 +8,21 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.7.0-alpha.1](https://github.com/keton-id/cora/compare/v0.6.1-alpha.1...v0.7.0-alpha.1) (2026-06-02)
+
+
+### Features
+
+* **cli:** add help and version conventions module ([170e234](https://github.com/keton-id/cora/commit/170e234e64f9742307e32b7f4d6f6983b69ec3cb))
+* **cli:** add help and version flag conventions ([3df2f08](https://github.com/keton-id/cora/commit/3df2f088818d2f14adfb32ef09d45d2c6ec427b7))
+* **cli:** add outPrint helper for pipe-friendly data output ([57b6739](https://github.com/keton-id/cora/commit/57b673928ee73a40648b010b43f7931fbf2514fa))
+* **npm:** add @keton-id/cora package, JS launcher, and CI prepare script ([91c544c](https://github.com/keton-id/cora/commit/91c544ca143db3e03775aae4dc9b08914586d764))
+
+
+### Bug Fixes
+
+* **cli:** use proven write path in outPrint and assert stdout in tests ([e9998f7](https://github.com/keton-id/cora/commit/e9998f7fc9e98e2d830629e4d329a893d80570e8))
+
 ## [0.6.1](https://github.com/keton-id/cora/compare/v0.6.0...v0.6.1) (2026-05-29)
 
 ## What's Changed
