@@ -574,6 +574,22 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
         }
     }
 
+    // Fast path for `cr policy show`: if the service is unlocked, fetch
+    // the rendered summary directly. Skips the passphrase prompt and the
+    // disk decrypt. Mutating actions always fall through to the offline
+    // flow below — the policy file is the source of truth.
+    if (is_show) {
+        var sock_buf: [128]u8 = undefined;
+        if (cora.service.defaultSocketPath(&sock_buf)) |sock_path| {
+            if (cora.client.isRunning(io, sock_path)) {
+                const text = try cora.client.policyShow(allocator, io, sock_path);
+                defer allocator.free(text);
+                usage.outPrint(io, "{s}", .{text});
+                return;
+            }
+        } else |_| {}
+    }
+
     const cwd = Io.Dir.cwd();
     if (!fileExists(io, cwd, path)) {
         std.debug.print("no {s} — run `cr init` first\n", .{path});
@@ -599,15 +615,10 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     defer cora.policy.free(allocator, &pol);
 
     if (is_show) {
-        usage.outPrint(io, "idle_timeout_ms: {d}\n", .{pol.idle_timeout_ms});
-        usage.outPrint(io, "allowed_callers ({d}):\n", .{pol.allowed_callers.len});
-        for (pol.allowed_callers) |c| usage.outPrint(io, "  {s}\n", .{c});
-        usage.outPrint(io, "tasks ({d}):\n", .{pol.tasks.len});
-        for (pol.tasks) |t| {
-            usage.outPrint(io, "  {s}: ", .{t.name});
-            for (t.allowed_secrets) |s| usage.outPrint(io, "{s} ", .{s});
-            usage.outPrint(io, "\n", .{});
-        }
+        var aw: std.Io.Writer.Allocating = .init(allocator);
+        defer aw.deinit();
+        try cora.service.renderPolicy(&aw.writer, &pol);
+        usage.outPrint(io, "{s}", .{aw.written()});
         return;
     }
 
@@ -745,6 +756,26 @@ fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []
 }
 
 fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
+    // Fast path: if the service is unlocked, ask it for the names directly.
+    // No passphrase prompt, no disk decrypt — names live in memory already.
+    var sock_buf: [128]u8 = undefined;
+    if (cora.service.defaultSocketPath(&sock_buf)) |sock_path| {
+        if (cora.client.isRunning(io, sock_path)) {
+            const names = try cora.client.secretsList(allocator, io, sock_path);
+            defer {
+                for (names) |n| allocator.free(n);
+                allocator.free(names);
+            }
+            if (names.len == 0) {
+                usage.outPrint(io, "(no secrets)\n", .{});
+                return;
+            }
+            for (names) |n| usage.outPrint(io, "{s}\n", .{n});
+            return;
+        }
+    } else |_| {}
+
+    // Offline fallback: vault on disk, prompt for passphrase to decrypt.
     const cwd = Io.Dir.cwd();
     if (!fileExists(io, cwd, path)) {
         std.debug.print("no {s} — run `cr init` first\n", .{path});
