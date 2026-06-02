@@ -8,6 +8,15 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.8.0-alpha.1](https://github.com/keton-id/cora/compare/v0.7.0-alpha.1...v0.8.0-alpha.1) (2026-06-02)
+
+
+### Features
+
+* **windows:** add Named Pipe and CreateProcessW wrappers ([8946f5e](https://github.com/keton-id/cora/commit/8946f5efd0885bf0924ddcc9e910ee671e752223))
+* **windows:** daemonize cr unlock and drop preview banner ([9b050bd](https://github.com/keton-id/cora/commit/9b050bd699aaa673dc461f16700b56cbb9d78a71))
+* **windows:** Tier-2 parity — Named Pipes, peer PID, daemonize ([02df367](https://github.com/keton-id/cora/commit/02df3672a13f3ada623108b78967664b02203d35))
+
 ## [0.7.0](https://github.com/keton-id/cora/compare/v0.6.1...v0.7.0) (2026-06-02)
 
 ## What's Changed
