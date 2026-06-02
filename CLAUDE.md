@@ -18,7 +18,7 @@ This is an **encrypted-file-based, agent-aware, ephemeral credential whisperer.*
 
 CLI command: `cr`
 License: AGPL-3.0
-Status: pre-alpha · macOS + Linux · Windows (preview, Tier 1) · Zig 0.16
+Status: pre-alpha · macOS + Linux + Windows (Tier 1) · Zig 0.16
 
 ---
 
@@ -34,7 +34,7 @@ Cora's differentiators:
 1. **Portable** — one encrypted `cora.zon` file, carry it anywhere: laptop, server, CI/CD, container
 2. **Passphrase-derived encryption** — Argon2id → XChaCha20-Poly1305, human holds the key
 3. **Service model** — `cr unlock` decrypts into memory, background service serves secrets, `cr lock` zeroes everything
-4. **Caller identity verified at kernel level** — `SO_PEERCRED` (Linux), `LOCAL_PEERPID` (macOS), NTFS ACL trust on Windows preview (Tier 1; Named Pipe DACL planned for Tier 2)
+4. **Caller identity verified at kernel level** — `SO_PEERCRED` (Linux), `LOCAL_PEERPID` (macOS), `GetNamedPipeClientProcessId` (Windows)
 5. **Agent never holds values** — only names, injection goes directly into subprocess env
 6. **Zero infra** — single binary, no cloud, no daemon unless user wants one via systemd/launchd
 7. **Transport plugins** — OS keychain, 1Password, Vault, Infisical etc. are future community plugins, not core
@@ -126,12 +126,12 @@ Cora does not trust application-level tokens. It trusts the OS.
 | -------- | ---------------------------------------------- | ------------------------------------------ |
 | Linux    | `SO_PEERCRED` via `getsockopt`                 | PID, UID, GID — kernel-provided            |
 | macOS    | `LOCAL_PEERPID` (SOL_LOCAL=0, opt=0x002)       | PID; uid via `getuid()` (same-user socket) |
-| Windows  | Tier 1: trust user-only NTFS ACL on `%LOCALAPPDATA%\cora\` (AF_UNIX, no peer PID). Tier 2 (planned): Named Pipe DACL + `GetNamedPipeClientProcessId` | binary path via `QueryFullProcessImageNameW(GetCurrentProcessId())` |
+| Windows  | Named Pipe (`\\.\pipe\cora-<user>`) + `GetNamedPipeClientProcessId` | PID, binary path via `QueryFullProcessImageNameW(OpenProcess(pid))` |
 
 Binary path resolved per OS:
 - Linux: `readlink /proc/<pid>/exe`
 - macOS: `proc_pidpath(pid, ...)` (extern from libproc)
-- Windows: `QueryFullProcessImageNameW(OpenProcess(...))` (self-pid only in Tier 1)
+- Windows: `QueryFullProcessImageNameW(OpenProcess(peer_pid))` against the PID resolved by `GetNamedPipeClientProcessId`
 
 Matched against `Policy.allowed_callers` from decrypted `cora.zon` config block.
 Empty `allowed_callers` = dev-mode allow-all.
@@ -183,7 +183,7 @@ cora/
 │   │   ├── identity.zig      ← CallerIdentity + per-OS dispatch
 │   │   ├── linux.zig         ← SO_PEERCRED + /proc/<pid>/exe
 │   │   ├── macos.zig         ← LOCAL_PEERPID + proc_pidpath
-│   │   └── windows.zig       ← Tier 1: GetCurrentProcessId + QueryFullProcessImageNameW
+│   │   └── windows.zig       ← Tier 1: GetNamedPipeClientProcessId + QueryFullProcessImageNameW
 │   ├── policy/
 │   │   └── policy.zig        ← Policy { allowed_callers, idle_timeout_ms, tasks } via std.zon
 │   └── tui/
