@@ -136,9 +136,11 @@ jobs:
           TARGET="${{ matrix.target }}"
           case "${TARGET}" in
             *-windows*)
-              # Tier 1 Windows preview: ship as .zip, append -preview tag.
+              # Windows ships as .zip (no tarball convention on Windows).
+              # `${TARGET%-gnu}` strips the toolchain suffix so artifact
+              # filenames stay symmetric with the POSIX triples.
               TRIPLE="${TARGET%-gnu}"
-              ARTIFACT="cr-${VERSION}-${TRIPLE}-preview.zip"
+              ARTIFACT="cr-${VERSION}-${TRIPLE}.zip"
               (cd zig-out/bin && zip -q "${GITHUB_WORKSPACE}/${ARTIFACT}" cr.exe)
               ;;
             *)

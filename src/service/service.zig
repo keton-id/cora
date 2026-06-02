@@ -9,6 +9,7 @@ const proto = @import("proto.zig");
 const identity = @import("../identity/identity.zig");
 const policy_mod = @import("../policy/policy.zig");
 const audit = @import("../audit.zig");
+const pipe_windows = @import("pipe_windows.zig");
 const CoraError = @import("../error.zig").CoraError;
 
 extern "kernel32" fn GetProcessId(Process: *anyopaque) callconv(.winapi) u32;
@@ -27,70 +28,22 @@ fn nowMs(io: Io) i64 {
 
 pub const default_socket_format = "/tmp/cora-{d}.sock";
 
-extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
-extern "kernel32" fn GetEnvironmentVariableW(lpName: [*:0]const u16, lpBuffer: ?[*]u16, nSize: u32) callconv(.winapi) u32;
-extern "kernel32" fn CreateDirectoryW(lpPathName: [*:0]const u16, lpSecurityAttributes: ?*anyopaque) callconv(.winapi) i32;
-
-/// Resolve the AF_UNIX socket path used by `cr unlock` and clients.
-/// POSIX: `/tmp/cora-<uid>.sock`.
-/// Windows: `%LOCALAPPDATA%\cora\cora.sock`. AF_UNIX is supported on
-/// Windows 10 1803+. Peer PID is not exposed on Windows AF_UNIX sockets,
-/// so Tier 1 trusts the user-only NTFS ACL inherited from %LOCALAPPDATA%.
+/// Resolve the per-user IPC endpoint string used by `cr unlock` and clients.
+///
+/// POSIX: AF_UNIX socket path `/tmp/cora-<uid>.sock`.
+/// Windows (Tier 2): Named Pipe name `\\.\pipe\cora-<username>`.
+///
+/// Returns the path bytes inside `buf`. Tier-2 Windows uses Named Pipes
+/// (`pipe_windows.zig`) so the kernel can report the connected client's
+/// PID via `GetNamedPipeClientProcessId`. The string is opaque to
+/// callers — `service.start` and `client.connect` interpret it
+/// per-platform.
 pub fn defaultSocketPath(buf: []u8) ![]u8 {
     if (builtin.os.tag == .windows) {
-        const name = std.unicode.utf8ToUtf16LeStringLiteral("LOCALAPPDATA");
-        var wide: [260]u16 = undefined;
-        const n = GetEnvironmentVariableW(name, &wide, wide.len);
-        if (n == 0 or n >= wide.len) return error.NoLocalAppData;
-        var tmp: [520]u8 = undefined;
-        const m = try std.unicode.utf16LeToUtf8(&tmp, wide[0..n]);
-        return std.fmt.bufPrint(buf, "{s}\\cora\\cora.sock", .{tmp[0..m]});
+        return pipe_windows.defaultPipeNameUtf8(buf);
     }
     const uid: u64 = @intCast(std.c.getuid());
     return std.fmt.bufPrint(buf, default_socket_format, .{uid});
-}
-
-/// Validate that `socket_path` is a child of `<local_app_data>\cora\`. Split
-/// out as a pure helper so it can be exercised without touching the live
-/// %LOCALAPPDATA% env on test runners.
-fn checkSocketUnderBase(local_app_data: []const u8, socket_path: []const u8) !void {
-    var expected_buf: [600]u8 = undefined;
-    const expected = try std.fmt.bufPrint(&expected_buf, "{s}\\cora\\", .{local_app_data});
-    if (socket_path.len <= expected.len) return error.UnexpectedSocketLocation;
-    if (!std.ascii.eqlIgnoreCase(socket_path[0..expected.len], expected)) {
-        return error.UnexpectedSocketLocation;
-    }
-}
-
-/// Verify on Windows that the AF_UNIX socket path resolves under
-/// `%LOCALAPPDATA%\cora`. The Tier 1 trust model relies on the user-only
-/// NTFS ACL inherited from %LOCALAPPDATA%; if the path is elsewhere (env
-/// hijack, explicit override into a world-writable directory, etc.) the
-/// assumption is broken and the service must refuse to start. No-op on
-/// POSIX where socket permissions are enforced via chmod 0600 instead.
-fn verifyWindowsSocketParent(socket_path: []const u8) !void {
-    if (builtin.os.tag != .windows) return;
-    const name = std.unicode.utf8ToUtf16LeStringLiteral("LOCALAPPDATA");
-    var wide: [260]u16 = undefined;
-    const n = GetEnvironmentVariableW(name, &wide, wide.len);
-    if (n == 0 or n >= wide.len) return error.NoLocalAppData;
-    var base_buf: [520]u8 = undefined;
-    const base_len = try std.unicode.utf16LeToUtf8(&base_buf, wide[0..n]);
-    return checkSocketUnderBase(base_buf[0..base_len], socket_path);
-}
-
-/// Ensure the parent directory of `socket_path` exists on Windows.
-/// AF_UNIX bind fails if `%LOCALAPPDATA%\cora` is missing. No-op on POSIX
-/// (we use /tmp which always exists).
-fn ensureParentDir(path: []const u8) void {
-    if (builtin.os.tag != .windows) return;
-    const sep = std.mem.lastIndexOfScalar(u8, path, '\\') orelse return;
-    const dir = path[0..sep];
-    var wide_buf: [520]u16 = undefined;
-    const n = std.unicode.utf8ToUtf16Le(&wide_buf, dir) catch return;
-    if (n >= wide_buf.len) return;
-    wide_buf[n] = 0;
-    _ = CreateDirectoryW(@ptrCast(&wide_buf), null);
 }
 
 pub const Config = struct {
@@ -100,12 +53,117 @@ pub const Config = struct {
     audit_logger: ?*audit.Logger = null,
 };
 
+/// Per-platform server holder. On POSIX wraps `net.Server`; on Windows
+/// holds the persistent Named Pipe HANDLE plus the wide pipe name used
+/// to re-create instances between client connections.
+const Server = if (builtin.os.tag == .windows) struct {
+    pipe: pipe_windows.HANDLE,
+    name_wide: [pipe_windows.PipeNameMaxWide]u16,
+
+    fn start(io: Io, socket_path: []const u8) !Server {
+        _ = io;
+        _ = socket_path;
+        var s: Server = .{ .pipe = pipe_windows.INVALID_HANDLE_VALUE, .name_wide = undefined };
+        const name_z = try pipe_windows.defaultPipeNameWide(&s.name_wide);
+        s.pipe = try pipe_windows.createServerPipe(name_z.ptr);
+        return s;
+    }
+
+    fn deinit(self: *Server, io: Io) void {
+        _ = io;
+        if (@intFromPtr(self.pipe) != @intFromPtr(pipe_windows.INVALID_HANDLE_VALUE)) {
+            pipe_windows.closeHandle(self.pipe);
+            self.pipe = pipe_windows.INVALID_HANDLE_VALUE;
+        }
+    }
+
+    fn cancel(self: *Server, io: Io) void {
+        // Closing the pipe handle from the idle watcher thread cancels a
+        // pending `ConnectNamedPipe` in the accept loop, mirroring the
+        // POSIX `server.socket.close` cancellation path.
+        self.deinit(io);
+    }
+} else struct {
+    inner: net.Server,
+
+    fn start(io: Io, socket_path: []const u8) !Server {
+        Io.Dir.cwd().deleteFile(io, socket_path) catch {};
+        const ua = try net.UnixAddress.init(socket_path);
+        const inner = try ua.listen(io, .{});
+        try restrictSocketPermissions(socket_path);
+        return .{ .inner = inner };
+    }
+
+    fn deinit(self: *Server, io: Io) void {
+        self.inner.deinit(io);
+    }
+
+    fn cancel(self: *Server, io: Io) void {
+        self.inner.socket.close(io);
+    }
+};
+
+/// Per-platform transport for a single accepted connection. Both
+/// platforms expose `handle()` (for `identity.verify`), `close(io)`,
+/// and a `.interface`-bearing reader/writer pair compatible with
+/// `proto.readFrame`/`writeFrame`.
+const Stream = if (builtin.os.tag == .windows) struct {
+    pipe: pipe_windows.HANDLE,
+    file: Io.File,
+
+    fn fromConnectedPipe(pipe: pipe_windows.HANDLE) Stream {
+        return .{
+            .pipe = pipe,
+            .file = .{ .handle = pipe, .flags = .{ .nonblocking = false } },
+        };
+    }
+
+    fn close(self: *Stream, io: Io) void {
+        _ = io;
+        pipe_windows.disconnectClient(self.pipe);
+    }
+
+    fn idHandle(self: *Stream) std.posix.fd_t {
+        return self.pipe;
+    }
+
+    fn reader(self: *Stream, io: Io, buf: []u8) Io.File.Reader {
+        return self.file.readerStreaming(io, buf);
+    }
+
+    fn writer(self: *Stream, io: Io, buf: []u8) Io.File.Writer {
+        return self.file.writerStreaming(io, buf);
+    }
+} else struct {
+    inner: net.Stream,
+
+    fn fromAccepted(s: net.Stream) Stream {
+        return .{ .inner = s };
+    }
+
+    fn close(self: *Stream, io: Io) void {
+        self.inner.close(io);
+    }
+
+    fn idHandle(self: *Stream) std.posix.fd_t {
+        return self.inner.socket.handle;
+    }
+
+    fn reader(self: *Stream, io: Io, buf: []u8) net.Stream.Reader {
+        return net.Stream.Reader.init(self.inner, io, buf);
+    }
+
+    fn writer(self: *Stream, io: Io, buf: []u8) net.Stream.Writer {
+        return net.Stream.Writer.init(self.inner, io, buf);
+    }
+};
+
 pub const Service = struct {
     allocator: std.mem.Allocator,
     io: Io,
     secrets: *MemStore,
     timer: idle_mod.IdleTimer,
-    server: net.Server,
+    server: Server,
     socket_path: []const u8,
     shutdown: std.atomic.Value(bool),
     policy: policy_mod.Policy,
@@ -113,12 +171,7 @@ pub const Service = struct {
     audit_logger: ?*audit.Logger,
 
     pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
-        try verifyWindowsSocketParent(cfg.socket_path);
-        ensureParentDir(cfg.socket_path);
-        removeSocketIfStale(io, cfg.socket_path);
-        const ua = try net.UnixAddress.init(cfg.socket_path);
-        const server = try ua.listen(io, .{});
-        try restrictSocketPermissions(cfg.socket_path);
+        const server = try Server.start(io, cfg.socket_path);
         var svc: Service = .{
             .allocator = allocator,
             .io = io,
@@ -132,12 +185,6 @@ pub const Service = struct {
             .audit_logger = cfg.audit_logger,
         };
         svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
-        if (builtin.os.tag == .windows) {
-            svc.emit(.{ .windows_preview_mode = .{
-                .ts_ms = nowMs(svc.io),
-                .message = "tier-1 preview: caller identity bound to socket file ACL inherited from %LOCALAPPDATA%\\cora; peer-process credentials are not verified by the OS kernel",
-            } });
-        }
         return svc;
     }
 
@@ -151,14 +198,46 @@ pub const Service = struct {
         var idle_thread = try std.Thread.spawn(.{}, idleWatch, .{self});
         defer idle_thread.join();
 
+        if (builtin.os.tag == .windows) {
+            try self.runWindows();
+        } else {
+            try self.runPosix();
+        }
+    }
+
+    fn runPosix(self: *Service) !void {
         while (!self.shutdown.load(.acquire)) {
-            const stream = self.server.accept(self.io) catch |err| switch (err) {
+            const accepted = self.server.inner.accept(self.io) catch |err| switch (err) {
                 error.SocketNotListening, error.Canceled => break,
                 else => return err,
             };
-            self.handle(stream) catch |err| {
+            var stream = Stream.fromAccepted(accepted);
+            self.handle(&stream) catch |err| {
                 std.log.warn("handler error: {s}", .{@errorName(err)});
             };
+            if (self.shutdown.load(.acquire)) break;
+        }
+    }
+
+    fn runWindows(self: *Service) !void {
+        while (!self.shutdown.load(.acquire)) {
+            // Recreate the pipe instance once the previous client
+            // disconnects so we can wait for the next one. The very first
+            // iteration uses the instance created in Server.start.
+            if (@intFromPtr(self.server.pipe) == @intFromPtr(pipe_windows.INVALID_HANDLE_VALUE)) {
+                self.server.pipe = pipe_windows.createServerPipe(@ptrCast(&self.server.name_wide)) catch break;
+            }
+            pipe_windows.connectServer(self.server.pipe) catch break;
+            if (self.shutdown.load(.acquire)) break;
+
+            var stream = Stream.fromConnectedPipe(self.server.pipe);
+            self.handle(&stream) catch |err| {
+                std.log.warn("handler error: {s}", .{@errorName(err)});
+            };
+            // Disconnect + recreate next instance.
+            pipe_windows.disconnectClient(self.server.pipe);
+            pipe_windows.closeHandle(self.server.pipe);
+            self.server.pipe = pipe_windows.INVALID_HANDLE_VALUE;
             if (self.shutdown.load(.acquire)) break;
         }
     }
@@ -167,14 +246,16 @@ pub const Service = struct {
         self.emit(.{ .service_locked = .{ .ts_ms = nowMs(self.io), .reason = "exit" } });
         self.shutdown.store(true, .release);
         self.server.deinit(self.io);
-        Io.Dir.cwd().deleteFile(self.io, self.socket_path) catch {};
+        if (builtin.os.tag != .windows) {
+            Io.Dir.cwd().deleteFile(self.io, self.socket_path) catch {};
+        }
         zeroAll(self.secrets);
     }
 
-    fn handle(self: *Service, stream: net.Stream) !void {
+    fn handle(self: *Service, stream: *Stream) !void {
         defer stream.close(self.io);
 
-        const ident = identity.verify(stream.socket.handle) catch {
+        const ident = identity.verify(stream.idHandle()) catch {
             _ = self.rejected.fetchAdd(1, .monotonic);
             self.emit(.{ .caller_rejected = .{
                 .ts_ms = nowMs(self.io),
@@ -197,8 +278,8 @@ pub const Service = struct {
 
         var rbuf: [4096]u8 = undefined;
         var wbuf: [4096]u8 = undefined;
-        var reader = net.Stream.Reader.init(stream, self.io, &rbuf);
-        var writer = net.Stream.Writer.init(stream, self.io, &wbuf);
+        var reader = stream.reader(self.io, &rbuf);
+        var writer = stream.writer(self.io, &wbuf);
 
         var task_name_buf: [128]u8 = undefined;
         var task_name_len: usize = 0;
@@ -358,7 +439,7 @@ pub const Service = struct {
             self.io.sleep(.{ .nanoseconds = 250 * std.time.ns_per_ms }, .awake) catch return;
             if (self.timer.isExpired(self.io)) {
                 self.shutdown.store(true, .release);
-                self.server.socket.close(self.io);
+                self.server.cancel(self.io);
                 return;
             }
         }
@@ -370,59 +451,19 @@ fn zeroAll(s: *MemStore) void {
     while (it.next()) |entry| entry.value_ptr.*.zero();
 }
 
-fn removeSocketIfStale(io: Io, path: []const u8) void {
-    Io.Dir.cwd().deleteFile(io, path) catch {};
-}
-
-/// Force the bound AF_UNIX socket to mode 0600. Without this, the socket
-/// file inherits the process umask (typically 022, leaving the socket
-/// world-readable). On Windows AF_UNIX sockets, access is controlled by
-/// the NTFS ACL of `%LOCALAPPDATA%\cora`, not POSIX modes.
+/// Force the bound AF_UNIX socket to mode 0600. No-op on Windows where
+/// the analogous protection is the Named Pipe DACL.
 fn restrictSocketPermissions(path: []const u8) !void {
     if (builtin.os.tag == .windows) return;
     const path_z = try std.posix.toPosixPath(path);
     if (std.c.chmod(&path_z, 0o600) != 0) return error.SocketChmodFailed;
 }
 
-test "checkSocketUnderBase accepts path inside cora subdir" {
-    try checkSocketUnderBase(
-        "C:\\Users\\u\\AppData\\Local",
-        "C:\\Users\\u\\AppData\\Local\\cora\\cora.sock",
-    );
-}
-
-test "checkSocketUnderBase rejects path outside cora subdir" {
-    try std.testing.expectError(
-        error.UnexpectedSocketLocation,
-        checkSocketUnderBase(
-            "C:\\Users\\u\\AppData\\Local",
-            "C:\\Temp\\cora.sock",
-        ),
-    );
-}
-
-test "checkSocketUnderBase compares case-insensitively" {
-    try checkSocketUnderBase(
-        "C:\\users\\u\\appdata\\local",
-        "C:\\Users\\u\\AppData\\Local\\CORA\\cora.sock",
-    );
-}
-
-test "checkSocketUnderBase rejects bare base with no child" {
-    try std.testing.expectError(
-        error.UnexpectedSocketLocation,
-        checkSocketUnderBase(
-            "C:\\Users\\u\\AppData\\Local",
-            "C:\\Users\\u\\AppData\\Local\\cora\\",
-        ),
-    );
-}
-
-test "defaultSocketPath builds path" {
+test "defaultSocketPath builds platform-appropriate path" {
     var buf: [520]u8 = undefined;
     const p = try defaultSocketPath(&buf);
     if (builtin.os.tag == .windows) {
-        try std.testing.expect(std.mem.endsWith(u8, p, "\\cora\\cora.sock"));
+        try std.testing.expect(std.mem.startsWith(u8, p, "\\\\.\\pipe\\cora-"));
     } else {
         try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
         try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
@@ -441,8 +482,6 @@ test "restrictSocketPermissions forces 0600" {
     );
     const path_z = try std.posix.toPosixPath(path);
 
-    // Create a regular file with a permissive baseline so a no-op chmod would
-    // fail the assert below.
     const fd = std.c.open(
         &path_z,
         .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
@@ -456,9 +495,6 @@ test "restrictSocketPermissions forces 0600" {
 
     try restrictSocketPermissions(path);
 
-    // Verify via cross-platform Io.File.stat. std.c.fstat is `void` on Linux
-    // (only macOS has the symbol via dispatch), so a libc fstat call would
-    // fail to compile on linux runners.
     var file = try Io.Dir.openFileAbsolute(io, path, .{});
     defer file.close(io);
     const st = try file.stat(io);

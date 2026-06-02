@@ -125,37 +125,25 @@ An agent process **never holds a secret value in its memory**.
 
 ## Security Guarantees by Platform
 
-Cora ships on Linux, macOS, and Windows, but the security model is **not**
-identical on all three. Linux is the reference platform: every guarantee is
-enforced by code at runtime. macOS is close but trusts the filesystem
-permission of the socket for part of the caller-identity check. Windows is
-explicitly a **Tier-1 preview**: AF_UNIX on Windows does not expose peer
-process credentials, so Cora cannot do kernel-level caller verification there
-and falls back to the user-only NTFS ACL inherited from `%LOCALAPPDATA%`.
+Cora ships on Linux, macOS, and Windows. All three are **Tier 1**: every
+guarantee in the table below is enforced by code at runtime, on a kernel-
+backed peer-identity primitive. The minor differences (kernel API name,
+file/pipe ACL mechanism) are documented as ⚠️ where they matter.
 
-| Property                                  | Linux                             | macOS                             | Windows (preview)                          |
+| Property                                  | Linux                             | macOS                             | Windows                                    |
 | ----------------------------------------- | --------------------------------- | --------------------------------- | ------------------------------------------ |
 | Encrypted-at-rest secrets block           | ✅ XChaCha20-Poly1305 + Argon2id  | ✅ XChaCha20-Poly1305 + Argon2id  | ✅ XChaCha20-Poly1305 + Argon2id           |
 | Atomic rewrite of `cora.zon`              | ✅ `rename(2)` replace            | ✅ `rename(2)` replace            | ✅ `NtSetInformationFile` `REPLACE_IF_EXISTS` |
-| Caller binary verified by OS              | ✅ `SO_PEERCRED` + `/proc/<pid>/exe` | ⚠️ `LOCAL_PEERPID` + `proc_pidpath` (PID-only) | ❌ No peer PID via AF_UNIX — Tier 2 = Named Pipes |
-| Socket permission boundary                | ✅ `chmod 0600` on bind           | ✅ `chmod 0600` on bind           | ⚠️ Inherited NTFS ACL from `%LOCALAPPDATA%\cora` |
-| Socket parent location verified           | n/a (`/tmp`)                      | n/a (`/tmp`)                      | ✅ Service refuses to start if path escapes `%LOCALAPPDATA%\cora` |
+| Caller binary verified by OS              | ✅ `SO_PEERCRED` + `/proc/<pid>/exe` | ⚠️ `LOCAL_PEERPID` + `proc_pidpath` (PID-only) | ✅ `GetNamedPipeClientProcessId` + `QueryFullProcessImageNameW` |
+| IPC transport                             | AF_UNIX socket (`/tmp/cora-<uid>.sock`) | AF_UNIX socket (`/tmp/cora-<uid>.sock`) | Named Pipe (`\\.\pipe\cora-<user>`) |
+| Socket / pipe permission boundary         | ✅ `chmod 0600` on bind           | ✅ `chmod 0600` on bind           | ✅ Default pipe DACL (current-user token)  |
 | Secret prompt echo masking                | ✅ `termios` `ECHO` off            | ✅ `termios` `ECHO` off            | ✅ `SetConsoleMode` strips `ENABLE_ECHO_INPUT`, fails closed |
-| Service runs in background by default     | ✅ `fork` + `setsid`              | ✅ `fork` + `setsid`              | ❌ Foreground only (`cr unlock`)            |
-| Audit log emits preview notice on start   | n/a                               | n/a                               | ✅ `windows_preview_mode` event             |
+| Service runs in background by default     | ✅ `fork` + `setsid`              | ✅ `fork` + `setsid`              | ✅ `CreateProcessW` + `DETACHED_PROCESS`   |
 
 **Reading this table:**
 
 - ✅ — enforced by Cora code or a primitive that meets the guarantee.
 - ⚠️ — partial / depends on OS-level assumption that Cora does not itself enforce.
-- ❌ — not provided at this tier; documented as a Known Residual and tracked
-  on the Hardening Roadmap.
-
-Operators running Cora on Windows should treat it as `preview`-grade: file
-encryption and atomic rewrite are real, but the *who-is-calling* answer falls
-back to "whoever has access to the socket file under your user profile",
-**not** "the kernel says PID *N* is binary *X*". Move to Linux/macOS where the
-guarantee is needed.
 
 ---
 
@@ -165,7 +153,6 @@ Documented gaps in the current implementation. Each is an open issue;
 contributions welcome.
 
 - **macOS LOCAL_PEERPID TOCTOU.** PID returned by `getsockopt(LOCAL_PEERPID)` could in principle be reused between identity check and op handling. Audit-token-based verification (per macOS spec) is on the roadmap.
-- **Windows is a Tier-1 preview.** AF_UNIX on Windows does not expose peer process credentials, so caller identity falls back to the user-only NTFS ACL inherited from `%LOCALAPPDATA%\cora`. Service refuses to start if the socket path escapes that prefix. Tier 2 — Named Pipes + `GetNamedPipeClientProcessId` — is on the Hardening Roadmap. See the platform-guarantees table above.
 - **Idle timer clock.** Uses `Io.Timestamp.now(io, .awake)` — system suspend may not count toward idle time on all platforms, extending real-world idle beyond the configured value.
 - **Audit log rotation.** None. Truncate `~/.cora/audit.jsonl` manually if it grows. Log rotation is planned post-v0.1.
 - **No daemon supervision.** If the background service crashes you re-run `cr unlock`. No systemd/launchd contrib files ship with the project — community contributions welcome.
@@ -247,7 +234,6 @@ Before opening a PR that touches secret-handling code, confirm:
 These are tracked but not yet implemented:
 
 - macOS audit-token caller identity (replace LOCAL_PEERPID).
-- Windows Named Pipe + `GetNamedPipeClientProcessId` support (Tier 2 — replaces the AF_UNIX preview).
 - Log rotation by size + age.
 - Optional `mlock(2)` of `SecretBuf` heap pages to prevent swap.
 - Reproducible release builds + signed binaries.

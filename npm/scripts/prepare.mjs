@@ -47,11 +47,11 @@ const PLATFORMS = [
   { npmKey: "darwin-arm64", triple: "aarch64-macos", ext: "tar.gz", exe: "cr" },
   { npmKey: "linux-x64", triple: "x86_64-linux", ext: "tar.gz", exe: "cr" },
   { npmKey: "linux-arm64", triple: "aarch64-linux", ext: "tar.gz", exe: "cr" },
-  // Windows artifacts land as `cr-<version>-<arch>-windows-preview.zip`.
-  // The `-preview` tag is intentional and matches release.yml; it is not
-  // a release-channel marker, it is the platform-tier marker.
-  { npmKey: "win32-x64", triple: "x86_64-windows-preview", ext: "zip", exe: "cr.exe" },
-  { npmKey: "win32-arm64", triple: "aarch64-windows-preview", ext: "zip", exe: "cr.exe" },
+  // Windows artifacts land as `cr-<version>-<arch>-windows.zip` — Tier 2
+  // brings Windows to parity with macOS/Linux, so the `-preview` suffix
+  // that earlier releases carried is gone.
+  { npmKey: "win32-x64", triple: "x86_64-windows", ext: "zip", exe: "cr.exe" },
+  { npmKey: "win32-arm64", triple: "aarch64-windows", ext: "zip", exe: "cr.exe" },
 ];
 
 function parseArgs(argv) {

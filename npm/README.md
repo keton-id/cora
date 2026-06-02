@@ -27,10 +27,10 @@ This npm package bundles the prebuilt `cr` binary for every supported platform a
 | macOS | arm64 | Tier 1 |
 | Linux | x64 | Tier 1 |
 | Linux | arm64 | Tier 1 |
-| Windows | x64 | **Tier 1 preview** |
-| Windows | arm64 | **Tier 1 preview** |
+| Windows | x64 | Tier 1 |
+| Windows | arm64 | Tier 1 |
 
-The Windows builds run, but the caller-identity verification path is reduced to NTFS ACL trust on the per-user data directory rather than kernel-verified peer credentials. See [SECURITY.md](https://github.com/keton-id/cora/blob/main/SECURITY.md) for the full trust model.
+Caller-identity verification is kernel-backed on every supported target — `SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS, `GetNamedPipeClientProcessId` on Windows. See [SECURITY.md](https://github.com/keton-id/cora/blob/main/SECURITY.md) for the full trust model.
 
 At runtime, a tiny JS shim (`bin/cr.js`) picks the matching native binary out of the bundled `vendor/` directory. There are no postinstall scripts, no install-time downloads, and no `node_modules` runtime dependencies.
 

@@ -160,13 +160,14 @@ test "secrets set preserves policy (regression: finding 1)" {
     try std.testing.expect(std.mem.indexOf(u8, show.stdout, "API_KEY") != null);
 }
 
-// --- Platform-guarded contracts -------------------------------------------
-// The tests below pin behavior that is intentionally different per OS, so a
-// silent drift on one platform cannot pass as success on the others. Each
-// test runs on exactly one OS family and skips on the rest.
+// --- Cross-platform parity contracts --------------------------------------
+// Tier 2 (Named Pipes + GetNamedPipeClientProcessId + CreateProcessW
+// daemonize) brings Windows in line with macOS and Linux. The tests
+// below assert *absence* of every preview marker on every OS — banner,
+// status mode line, version tag. They used to be POSIX-only; now they
+// must hold cross-platform, and any reintroduction will fail CI.
 
-test "cr version advertises windows-preview tag (Windows-only)" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+test "cr version never carries the windows-preview tag" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -176,46 +177,11 @@ test "cr version advertises windows-preview tag (Windows-only)" {
     var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
     defer res.deinit(allocator);
     try std.testing.expect(res.exitOk());
-    const out = if (res.stdout.len > 0) res.stdout else res.stderr;
-    try std.testing.expect(std.mem.indexOf(u8, out, "[windows-preview]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "[windows-preview]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "[windows-preview]") == null);
 }
 
-test "cr version omits windows-preview tag (POSIX-only)" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
-    defer res.deinit(allocator);
-    try std.testing.expect(res.exitOk());
-    const out = if (res.stdout.len > 0) res.stdout else res.stderr;
-    try std.testing.expect(std.mem.indexOf(u8, out, "[windows-preview]") == null);
-}
-
-test "cr status surfaces windows-preview mode line (Windows-only)" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    // Service is not running in this fresh tmp dir, so we hit the
-    // "not running" branch — the mode line is appended unconditionally on
-    // Windows so operators still see the trust-model disclaimer.
-    // `cr status` is not a sensitive sub, so there is no banner on stderr;
-    // the data, including the mode line, lands on stdout.
-    var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
-    defer res.deinit(allocator);
-    try std.testing.expect(res.exitOk());
-    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "mode: windows-preview") != null);
-}
-
-test "cr status omits windows-preview mode line (POSIX-only)" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+test "cr status never emits the windows-preview mode line" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -226,11 +192,10 @@ test "cr status omits windows-preview mode line (POSIX-only)" {
     defer res.deinit(allocator);
     try std.testing.expect(res.exitOk());
     try std.testing.expect(std.mem.indexOf(u8, res.stdout, "mode: windows-preview") == null);
-    try std.testing.expectEqualStrings("", res.stderr);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "mode: windows-preview") == null);
 }
 
-test "cr policy show emits windows-preview banner (Windows-only)" {
-    if (builtin.os.tag != .windows) return error.SkipZigTest;
+test "cr policy show never emits a windows-preview banner" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
@@ -241,42 +206,8 @@ test "cr policy show emits windows-preview banner (Windows-only)" {
     var show = try policyShow(allocator, io, tmp.dir);
     defer show.deinit(allocator);
     try std.testing.expect(show.exitOk());
-
-    const out = if (show.stderr.len > 0) show.stderr else show.stdout;
-    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") != null);
-}
-
-test "cr policy show omits windows-preview banner (POSIX-only)" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    try initFixture(allocator, io, tmp.dir);
-
-    var show = try policyShow(allocator, io, tmp.dir);
-    defer show.deinit(allocator);
-    try std.testing.expect(show.exitOk());
-
-    const out = if (show.stderr.len > 0) show.stderr else show.stdout;
-    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") == null);
-}
-
-test "cr version never emits sensitive-sub banner (cross-platform)" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
-    defer res.deinit(allocator);
-    try std.testing.expect(res.exitOk());
-    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
-    // Banner is only printed for sensitive subs; `version` is not one of
-    // them on any platform.
-    try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") == null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "warning: running in windows-preview") == null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "warning: running in windows-preview") == null);
 }
 
 // --- Help / version conventions -------------------------------------------
@@ -562,8 +493,7 @@ test "cr init writes confirmation to stdout" {
     try std.testing.expect(std.mem.indexOf(u8, res.stdout, "wrote encrypted cora.zon") != null);
 }
 
-test "cr status writes state to stdout (POSIX-only)" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+test "cr status writes state to stdout" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
