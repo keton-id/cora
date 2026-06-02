@@ -151,12 +151,13 @@ test "secrets set preserves policy (regression: finding 1)" {
     defer show.deinit(allocator);
     try std.testing.expect(show.exitOk());
 
-    // cmdPolicy.show prints to stderr via std.debug.print.
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "allowed_callers (1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "/bin/echo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "tasks (1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "demo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "API_KEY") != null);
+    // `cr policy show` data is pipe-friendly: it goes to stdout. Errors,
+    // prompts, and the Windows banner stay on stderr.
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "allowed_callers (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "/bin/echo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "tasks (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "API_KEY") != null);
 }
 
 // --- Platform-guarded contracts -------------------------------------------
@@ -542,6 +543,116 @@ test "cr secrets bogus emits unknown action to stderr, exit 1" {
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown secrets action: bogus") != null);
 }
 
+// --- Channel discipline ---------------------------------------------------
+// Data output for every command lands on stdout so `cr <sub> | grep / jq`
+// works. Errors, warnings, and prompts continue to use stderr. These tests
+// pin the contract per command.
+
+test "cr init writes confirmation to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "init", "cora.zon" }, init_stdin);
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "wrote encrypted cora.zon") != null);
+}
+
+test "cr status writes state to stdout (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "status: not running") != null);
+    try std.testing.expectEqualStrings("", res.stderr);
+}
+
+test "cr secrets list emits names on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "MY_TOKEN" }, pass_line ++ "v\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    var list = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+    defer list.deinit(allocator);
+    try std.testing.expect(list.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, list.stdout, "MY_TOKEN") != null);
+}
+
+test "cr secrets list emits (no secrets) on stdout when empty" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var list = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+    defer list.deinit(allocator);
+    try std.testing.expect(list.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, list.stdout, "(no secrets)") != null);
+}
+
+test "cr secrets set emits confirmation on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "K" }, pass_line ++ "v\n");
+    defer r.deinit(allocator);
+    try std.testing.expect(r.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "set K") != null);
+}
+
+test "cr policy allow confirmation lands on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", "/bin/echo" }, pass_line);
+    defer r.deinit(allocator);
+    try std.testing.expect(r.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "policy updated") != null);
+}
+
+test "cr bogus does not write anything to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"bogus"}, "");
+    defer res.deinit(allocator);
+    try assertExitCode(res, 1);
+    // Pipe-safety: errors must not contaminate stdout.
+    try std.testing.expectEqualStrings("", res.stdout);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown subcommand: bogus") != null);
+}
+
 test "policy allow preserves tasks (regression: finding 2)" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -566,7 +677,7 @@ test "policy allow preserves tasks (regression: finding 2)" {
     defer show.deinit(allocator);
     try std.testing.expect(show.exitOk());
 
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "tasks (1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "demo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "allowed_callers (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "tasks (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "allowed_callers (1)") != null);
 }
