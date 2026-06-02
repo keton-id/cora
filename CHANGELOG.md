@@ -8,6 +8,21 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.7.0](https://github.com/keton-id/cora/compare/v0.6.1...v0.7.0) (2026-06-02)
+
+## What's Changed
+* chore(changelog): enrich v0.6.1 with contributors by @github-actions[bot] in https://github.com/keton-id/cora/pull/24
+* feat(cli): add help and version flag conventions by @mulhamna in https://github.com/keton-id/cora/pull/25
+* ci(release): publish @keton-id/cora to npm by @mulhamna in https://github.com/keton-id/cora/pull/27
+* chore(main): release 0.7.0-alpha.1 by @mulhamna in https://github.com/keton-id/cora/pull/26
+
+
+**Full Changelog**: https://github.com/keton-id/cora/compare/v0.6.1...v0.7.0
+
+### Contributors
+
+@github-actions, @keton-id, @mulhamna
+
 ## [0.7.0-alpha.1](https://github.com/keton-id/cora/compare/v0.6.1-alpha.1...v0.7.0-alpha.1) (2026-06-02)
 
 
