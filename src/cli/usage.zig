@@ -39,6 +39,22 @@ fn write(io: Io, ch: Channel, text: []const u8) void {
     f.writeStreamingAll(io, text) catch {};
 }
 
+/// Formatted write to stdout. Use this for *data* output (lists, dumps,
+/// confirmation lines) that callers may want to pipe — `cr secrets list`,
+/// `cr policy show`, `cr audit tail`, etc. Error / warning / prompt
+/// messages should continue to use `std.debug.print` so they stay on
+/// stderr.
+///
+/// Fails open: a failed write or flush silently drops the line rather
+/// than propagating. This matches `std.debug.print`'s behavior and avoids
+/// turning a broken pipe into a process error.
+pub fn outPrint(io: Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [4096]u8 = undefined;
+    var w = Io.File.stdout().writerStreaming(io, &buf);
+    w.interface.print(fmt, args) catch return;
+    w.interface.flush() catch return;
+}
+
 // --- Top-level ------------------------------------------------------------
 
 pub fn printTop(io: Io, ch: Channel) void {
