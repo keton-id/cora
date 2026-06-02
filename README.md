@@ -47,9 +47,10 @@ agent — nothing to print. The value was never in that process.
 
 ## Install
 
-Pick whichever fits your trust model.
+Pick whichever fits your trust model — click to expand.
 
-### A. Pre-built binary via install script (recommended)
+<details>
+<summary><strong>A. Pre-built binary via install script</strong> &nbsp;<em>(recommended)</em></summary>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh | sh
@@ -70,7 +71,10 @@ curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
     | sh -s -- --channel alpha
 ```
 
-### B. Homebrew (macOS + Linux)
+</details>
+
+<details>
+<summary><strong>B. Homebrew</strong> &nbsp;<code>brew install cora</code> &nbsp;<em>(macOS + Linux)</em></summary>
 
 ```bash
 brew tap keton-id/tap
@@ -78,12 +82,15 @@ brew install cora
 ```
 
 The package name is `cora`; the installed binary is `cr`. `brew upgrade cora`
-later picks up new stable releases. The
+picks up new stable releases. The
 [`keton-id/homebrew-tap`](https://github.com/keton-id/homebrew-tap) repo
 is updated automatically by Cora's release pipeline on every stable
 tag. Pre-release alpha tags are **not** pushed to the tap.
 
-### C. Scoop (Windows)
+</details>
+
+<details>
+<summary><strong>C. Scoop</strong> &nbsp;<code>scoop install cora</code> &nbsp;<em>(Windows)</em></summary>
 
 ```powershell
 scoop bucket add keton-id https://github.com/keton-id/scoop-bucket
@@ -95,7 +102,10 @@ picks up new stable releases. The
 [`keton-id/scoop-bucket`](https://github.com/keton-id/scoop-bucket) repo
 is updated automatically on every stable tag.
 
-### D. npm — `@keton-id/cora`
+</details>
+
+<details>
+<summary><strong>D. npm</strong> &nbsp;<code>npm i -g @keton-id/cora</code></summary>
 
 ```bash
 npm i -g @keton-id/cora
@@ -113,7 +123,10 @@ x64/arm64. A tiny JS launcher (`bin/cr.js`) picks the matching binary
 at runtime. No postinstall download, no native node addon. Only
 stable releases publish to npm; alphas stay on GitHub Releases.
 
-### E. Manual download from GitHub Releases
+</details>
+
+<details>
+<summary><strong>E. Manual download from GitHub Releases</strong></summary>
 
 Grab the archive for your platform from the
 [Releases page](https://github.com/keton-id/cora/releases) and verify
@@ -142,9 +155,10 @@ $Env:PATH += ";$Env:LOCALAPPDATA\cora\bin"
 cr version
 ```
 
-### F. Build from source
+</details>
 
-Requires Zig 0.16+.
+<details>
+<summary><strong>F. Build from source</strong> &nbsp;<em>(Zig 0.16+)</em></summary>
 
 ```bash
 git clone https://github.com/keton-id/cora && cd cora
@@ -169,6 +183,8 @@ Install to another prefix:
 ```bash
 make install PREFIX=/usr/local
 ```
+
+</details>
 
 ---
 
