@@ -1,0 +1,4 @@
+# Default owner for every path in the repo. GitHub auto-requests a
+# review from this account on every PR that touches a matched file.
+# Single-maintainer setup; refine when the team grows.
+* @mulhamna
