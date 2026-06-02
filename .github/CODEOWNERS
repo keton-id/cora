@@ -1,0 +1,8 @@
+# Default owner for every path in the repo. GitHub auto-requests a
+# review from this team on every PR that touches a matched file.
+#
+# The team `maintainers` must exist in the `keton-id` org and have
+# write access to this repo; until that team is created GitHub will
+# render "Unknown owner" against this entry and reviews will not
+# auto-assign.
+* @keton-id/maintainers
