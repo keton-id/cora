@@ -1,10 +1,45 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const net = Io.net;
 const proto = @import("proto.zig");
+const pipe_windows = @import("pipe_windows.zig");
 const CoraError = @import("../error.zig").CoraError;
 
-pub const Conn = struct {
+/// Per-platform client connection holder.
+///
+/// POSIX:   AF_UNIX socket via `net.Stream`.
+/// Windows: Named Pipe HANDLE wrapped in `Io.File` so the existing
+///          `proto.readFrame` / `writeFrame` (which take any `Io.Reader`
+///          / `Io.Writer`) keep working unchanged.
+pub const Conn = if (builtin.os.tag == .windows) struct {
+    pipe: pipe_windows.HANDLE,
+    file: Io.File,
+    io: Io,
+    allocator: std.mem.Allocator,
+    rbuf: [4096]u8 = undefined,
+    wbuf: [4096]u8 = undefined,
+
+    pub fn deinit(self: *Conn) void {
+        pipe_windows.closeHandle(self.pipe);
+    }
+
+    pub fn writeFrame(self: *Conn, op: proto.Op, payload: []const u8) !void {
+        var writer = self.file.writerStreaming(self.io, &self.wbuf);
+        try proto.writeFrame(&writer.interface, op, payload);
+        try writer.interface.flush();
+    }
+
+    pub fn readFrame(self: *Conn) !proto.Frame {
+        var reader = self.file.readerStreaming(self.io, &self.rbuf);
+        return proto.readFrame(&reader.interface, self.allocator);
+    }
+
+    pub fn roundtrip(self: *Conn, op: proto.Op, payload: []const u8) !proto.Frame {
+        try self.writeFrame(op, payload);
+        return self.readFrame();
+    }
+} else struct {
     stream: net.Stream,
     io: Io,
     allocator: std.mem.Allocator,
@@ -33,9 +68,27 @@ pub const Conn = struct {
 };
 
 pub fn connect(allocator: std.mem.Allocator, io: Io, socket_path: []const u8) !Conn {
-    const ua = try net.UnixAddress.init(socket_path);
-    const stream = try ua.connect(io);
-    return .{ .stream = stream, .io = io, .allocator = allocator };
+    if (builtin.os.tag == .windows) {
+        var name_wide_buf: [pipe_windows.PipeNameMaxWide]u16 = undefined;
+        // socket_path on Windows is already the UTF-8 pipe name string
+        // (`\\.\pipe\cora-<user>`); convert it to UTF-16Z for CreateFileW.
+        if (socket_path.len + 1 > name_wide_buf.len) return CoraError.Io;
+        const n = std.unicode.utf8ToUtf16Le(&name_wide_buf, socket_path) catch return CoraError.Io;
+        name_wide_buf[n] = 0;
+        const name_z: [*:0]const u16 = @ptrCast(&name_wide_buf);
+
+        const pipe = try pipe_windows.connectClient(name_z);
+        return .{
+            .pipe = pipe,
+            .file = .{ .handle = pipe, .flags = .{ .nonblocking = false } },
+            .io = io,
+            .allocator = allocator,
+        };
+    } else {
+        const ua = try net.UnixAddress.init(socket_path);
+        const stream = try ua.connect(io);
+        return .{ .stream = stream, .io = io, .allocator = allocator };
+    }
 }
 
 pub fn isRunning(io: Io, socket_path: []const u8) bool {
