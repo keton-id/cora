@@ -45,14 +45,23 @@ fn write(io: Io, ch: Channel, text: []const u8) void {
 /// messages should continue to use `std.debug.print` so they stay on
 /// stderr.
 ///
-/// Fails open: a failed write or flush silently drops the line rather
-/// than propagating. This matches `std.debug.print`'s behavior and avoids
-/// turning a broken pipe into a process error.
+/// Implementation mirrors the `write` helper above: format into a stack
+/// buffer, then call `writeStreamingAll` on `Io.File.stdout()`. This is
+/// the same code path the help-text writes already use, so behavior is
+/// uniform across POSIX and the Windows preview build. The
+/// `writerStreaming`/`interface.print`/`flush` triplet was tried first
+/// but appeared to drop output on Windows when the child's stdout was a
+/// pipe (CI regression on PR #25), so we stay with the proven path.
+///
+/// Fails open: a `bufPrint` overflow or a failed write silently drops
+/// the line rather than propagating. This matches `std.debug.print`'s
+/// behavior and avoids turning a broken pipe into a process error.
+/// The 16 KB stack buffer comfortably fits any single CLI line emitted
+/// today (longest is an audit JSONL line, typically < 1 KB).
 pub fn outPrint(io: Io, comptime fmt: []const u8, args: anytype) void {
-    var buf: [4096]u8 = undefined;
-    var w = Io.File.stdout().writerStreaming(io, &buf);
-    w.interface.print(fmt, args) catch return;
-    w.interface.flush() catch return;
+    var buf: [16 * 1024]u8 = undefined;
+    const text = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    Io.File.stdout().writeStreamingAll(io, text) catch return;
 }
 
 // --- Top-level ------------------------------------------------------------

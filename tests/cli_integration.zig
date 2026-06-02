@@ -206,11 +206,12 @@ test "cr status surfaces windows-preview mode line (Windows-only)" {
     // Service is not running in this fresh tmp dir, so we hit the
     // "not running" branch — the mode line is appended unconditionally on
     // Windows so operators still see the trust-model disclaimer.
+    // `cr status` is not a sensitive sub, so there is no banner on stderr;
+    // the data, including the mode line, lands on stdout.
     var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
     defer res.deinit(allocator);
     try std.testing.expect(res.exitOk());
-    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
-    try std.testing.expect(std.mem.indexOf(u8, out, "mode: windows-preview") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "mode: windows-preview") != null);
 }
 
 test "cr status omits windows-preview mode line (POSIX-only)" {
@@ -224,8 +225,8 @@ test "cr status omits windows-preview mode line (POSIX-only)" {
     var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
     defer res.deinit(allocator);
     try std.testing.expect(res.exitOk());
-    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
-    try std.testing.expect(std.mem.indexOf(u8, out, "mode: windows-preview") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "mode: windows-preview") == null);
+    try std.testing.expectEqualStrings("", res.stderr);
 }
 
 test "cr policy show emits windows-preview banner (Windows-only)" {
