@@ -220,6 +220,51 @@ jobs:
             gh release edit "$TAG" --draft=false --prerelease=false --repo "$GITHUB_REPOSITORY"
           fi
 
+  publish-npm:
+    name: publish npm package
+    needs: [resolve, publish]
+    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cora
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Prepare npm tree
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          node cora/npm/scripts/prepare.mjs \
+            --version "$VERSION" \
+            --dist dist \
+            --npm cora/npm
+
+      - name: Pack preview (for the CI log)
+        working-directory: cora/npm
+        run: |
+          set -euo pipefail
+          npm pack --dry-run
+
+      - name: Publish to npm
+        working-directory: cora/npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm publish --access public
+
   publish-homebrew:
     name: publish homebrew formula
     needs: [resolve, publish]

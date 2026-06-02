@@ -23,3 +23,6 @@ cora-test
 
 # OS junk
 Thumbs.db
+
+# npm publish staging — vendor/ is populated by CI from release artifacts
+npm/vendor/
