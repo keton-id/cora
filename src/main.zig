@@ -4,15 +4,10 @@ const Io = std.Io;
 const cora = @import("cora");
 const tui_menu = @import("tui/menu.zig");
 const usage = @import("cli/usage.zig");
+const spawn_windows = @import("service/spawn_windows.zig");
 const build_options = @import("build_options");
 
 const default_path = "cora.zon";
-
-/// Single source of truth for the Windows preview brand. Appears in the
-/// `cr version` tag, the sensitive-subcommand warning banner, and the
-/// `cr status` mode line. Keeping it here prevents the three surfaces from
-/// drifting from each other if the label is ever renamed.
-const windows_preview_label = "windows-preview";
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -36,11 +31,6 @@ pub fn main(init: std.process.Init) !void {
         printVersion(io);
         return;
     }
-
-    // Suppress the Windows preview banner when the caller is asking for help
-    // anywhere in the argv. `cr secrets --help` shouldn't warn about a trust
-    // model it isn't going to use.
-    if (isSensitiveSub(sub) and !argvHasHelpFlag(args[2..])) printWindowsPreviewBanner();
 
     if (std.mem.eql(u8, sub, "init")) {
         if (args.len >= 3 and usage.isHelpFlag(args[2])) {
@@ -127,13 +117,11 @@ fn argvHasHelpFlag(rest: []const []const u8) bool {
 }
 
 fn printVersion(io: Io) void {
-    const tag = if (builtin.os.tag == .windows) " [" ++ windows_preview_label ++ "]" else "";
     var buf: [256]u8 = undefined;
-    const text = std.fmt.bufPrint(&buf, "cr {s} (commit {s}, built {s}){s}\n", .{
+    const text = std.fmt.bufPrint(&buf, "cr {s} (commit {s}, built {s})\n", .{
         build_options.version,
         build_options.commit,
         build_options.build_date,
-        tag,
     }) catch return;
     Io.File.stdout().writeStreamingAll(io, text) catch {};
 }
@@ -255,29 +243,6 @@ fn cmdSecrets(arena: std.mem.Allocator, io: Io, path: []const u8, args: []const 
 }
 
 /// Subcommands that mutate secret material, policy, or spawn a process with
-/// secrets injected. These are the operator-facing surfaces where the Windows
-/// preview trust model (socket-ACL caller verification only) is materially
-/// different from POSIX, so the user must see a single-line in-band warning
-/// before each invocation.
-fn isSensitiveSub(sub: []const u8) bool {
-    return std.mem.eql(u8, sub, "init") or
-        std.mem.eql(u8, sub, "unlock") or
-        std.mem.eql(u8, sub, "secrets") or
-        std.mem.eql(u8, sub, "policy") or
-        std.mem.eql(u8, sub, "exec");
-}
-
-/// One-line preview banner for the sensitive subcommands. No-op on POSIX so
-/// the same call site is safe to leave unguarded.
-fn printWindowsPreviewBanner() void {
-    if (builtin.os.tag != .windows) return;
-    std.debug.print(
-        "warning: running in " ++ windows_preview_label ++
-            ". caller identity verified by socket ACL only, not by OS peer credentials. see SECURITY.md.\n",
-        .{},
-    );
-}
-
 fn cmdInit(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
     const cwd = Io.Dir.cwd();
     if (fileExists(io, cwd, path)) {
@@ -339,6 +304,22 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     defer std.crypto.secureZero(u8, &pass_buf);
     const passphrase = try readSecret("Passphrase: ", &pass_buf);
 
+    // Windows daemonize: parent has no fork. Re-exec `cr unlock --foreground`
+    // as a DETACHED_PROCESS child, hand it the passphrase over stdin once,
+    // then return cleanly. The child runs the rest of this function under
+    // the `foreground` branch on its own process, including the decrypt,
+    // policy parse, and service main loop. Decryption deliberately stays
+    // on the child side so the parent does not hold a derived key after
+    // returning.
+    if (!foreground and builtin.os.tag == .windows) {
+        const spawned = spawn_windows.spawnDetachedForeground(allocator, passphrase) catch |err| {
+            std.debug.print("daemonize failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        usage.outPrint(io, "service started (pid {d}) at {s}\n", .{ spawned.pid, sock_path });
+        return;
+    }
+
     var secrets = cora.MemStore.init(allocator);
     defer secrets.deinit();
 
@@ -356,31 +337,25 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     var pol = try cora.policy.parse(allocator, dec.config_bytes);
     defer cora.policy.free(allocator, &pol);
 
-    if (!foreground) {
-        if (builtin.os.tag == .windows) {
-            // TODO(windows): daemonize via CreateProcessW with DETACHED_PROCESS.
-            // For Tier 1 preview, run foreground and warn.
-            std.debug.print("warning: background mode not yet supported on windows, running foreground\n", .{});
-        } else {
-            const pid = std.c.fork();
-            if (pid < 0) {
-                std.debug.print("fork failed\n", .{});
-                std.process.exit(1);
-            }
-            if (pid != 0) {
-                usage.outPrint(io, "service started (pid {d}) at {s}\n", .{ pid, sock_path });
-                std.process.exit(0);
-            }
-            _ = std.c.setsid();
-            // Detach inherited std fds so parent pipes/terminals can close.
-            const o: std.c.O = .{ .ACCMODE = .RDWR };
-            const devnull_fd = std.c.open("/dev/null", o);
-            if (devnull_fd >= 0) {
-                _ = std.c.dup2(devnull_fd, std.posix.STDIN_FILENO);
-                _ = std.c.dup2(devnull_fd, std.posix.STDOUT_FILENO);
-                _ = std.c.dup2(devnull_fd, std.posix.STDERR_FILENO);
-                if (devnull_fd > std.posix.STDERR_FILENO) _ = std.c.close(devnull_fd);
-            }
+    if (!foreground and builtin.os.tag != .windows) {
+        const pid = std.c.fork();
+        if (pid < 0) {
+            std.debug.print("fork failed\n", .{});
+            std.process.exit(1);
+        }
+        if (pid != 0) {
+            usage.outPrint(io, "service started (pid {d}) at {s}\n", .{ pid, sock_path });
+            std.process.exit(0);
+        }
+        _ = std.c.setsid();
+        // Detach inherited std fds so parent pipes/terminals can close.
+        const o: std.c.O = .{ .ACCMODE = .RDWR };
+        const devnull_fd = std.c.open("/dev/null", o);
+        if (devnull_fd >= 0) {
+            _ = std.c.dup2(devnull_fd, std.posix.STDIN_FILENO);
+            _ = std.c.dup2(devnull_fd, std.posix.STDOUT_FILENO);
+            _ = std.c.dup2(devnull_fd, std.posix.STDERR_FILENO);
+            if (devnull_fd > std.posix.STDERR_FILENO) _ = std.c.close(devnull_fd);
         }
     }
 
@@ -728,16 +703,10 @@ fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     const sock_path = try cora.service.defaultSocketPath(&sock_buf);
     if (!cora.client.isRunning(io, sock_path)) {
         usage.outPrint(io, "status: not running\n", .{});
-        if (builtin.os.tag == .windows) {
-            usage.outPrint(io, "  mode: " ++ windows_preview_label ++ " (degraded trust model — see SECURITY.md)\n", .{});
-        }
         return;
     }
     const s = try cora.client.status(allocator, io, sock_path);
     usage.outPrint(io, "status: running\n  secrets: {d}\n  idle remaining: {d} ms\n", .{ s.secrets_count, s.idle_remaining_ms });
-    if (builtin.os.tag == .windows) {
-        usage.outPrint(io, "  mode: windows-preview (degraded trust model — see SECURITY.md)\n", .{});
-    }
 }
 
 fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {
