@@ -151,12 +151,13 @@ test "secrets set preserves policy (regression: finding 1)" {
     defer show.deinit(allocator);
     try std.testing.expect(show.exitOk());
 
-    // cmdPolicy.show prints to stderr via std.debug.print.
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "allowed_callers (1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "/bin/echo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "tasks (1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "demo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "API_KEY") != null);
+    // `cr policy show` data is pipe-friendly: it goes to stdout. Errors,
+    // prompts, and the Windows banner stay on stderr.
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "allowed_callers (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "/bin/echo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "tasks (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "API_KEY") != null);
 }
 
 // --- Platform-guarded contracts -------------------------------------------
@@ -205,11 +206,12 @@ test "cr status surfaces windows-preview mode line (Windows-only)" {
     // Service is not running in this fresh tmp dir, so we hit the
     // "not running" branch — the mode line is appended unconditionally on
     // Windows so operators still see the trust-model disclaimer.
+    // `cr status` is not a sensitive sub, so there is no banner on stderr;
+    // the data, including the mode line, lands on stdout.
     var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
     defer res.deinit(allocator);
     try std.testing.expect(res.exitOk());
-    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
-    try std.testing.expect(std.mem.indexOf(u8, out, "mode: windows-preview") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "mode: windows-preview") != null);
 }
 
 test "cr status omits windows-preview mode line (POSIX-only)" {
@@ -223,8 +225,8 @@ test "cr status omits windows-preview mode line (POSIX-only)" {
     var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
     defer res.deinit(allocator);
     try std.testing.expect(res.exitOk());
-    const out = if (res.stderr.len > 0) res.stderr else res.stdout;
-    try std.testing.expect(std.mem.indexOf(u8, out, "mode: windows-preview") == null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "mode: windows-preview") == null);
+    try std.testing.expectEqualStrings("", res.stderr);
 }
 
 test "cr policy show emits windows-preview banner (Windows-only)" {
@@ -277,6 +279,381 @@ test "cr version never emits sensitive-sub banner (cross-platform)" {
     try std.testing.expect(std.mem.indexOf(u8, out, "warning: running in windows-preview") == null);
 }
 
+// --- Help / version conventions -------------------------------------------
+// `cr help`, `cr --help`, `cr -h`, `cr --version`, `cr -V`, and per-sub
+// `--help` must all be recognized and route their output to stdout (not
+// stderr) so that `cr --help | grep foo` stays pipe-friendly. Errors from
+// unknown subcommands / actions must continue to land on stderr with a
+// non-zero exit status.
+
+fn assertExitOk(res: RunResult) !void {
+    try std.testing.expect(res.exitOk());
+}
+
+fn assertExitCode(res: RunResult, expected: u8) !void {
+    switch (res.term) {
+        .exited => |c| try std.testing.expectEqual(expected, c),
+        else => return error.UnexpectedTermination,
+    }
+}
+
+test "cr (no args) prints top usage to stdout, exit 0" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{}, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr — Cora secret runtime") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "Subcommands:") != null);
+}
+
+test "cr help routes top usage to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"help"}, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr — Cora secret runtime") != null);
+}
+
+test "cr --help routes top usage to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"--help"}, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr — Cora secret runtime") != null);
+}
+
+test "cr -h routes top usage to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"-h"}, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr — Cora secret runtime") != null);
+}
+
+test "cr --version prints version to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"--version"}, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "(commit ") != null);
+}
+
+test "cr -V prints version to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"-V"}, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "(commit ") != null);
+}
+
+test "cr version (legacy) prints to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"version"}, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr ") != null);
+}
+
+test "cr secrets --help prints secrets usage to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "secrets", "--help" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr secrets — Manage secrets") != null);
+}
+
+test "cr secrets set --help prints action usage to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "--help" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr secrets set — Add or update a secret") != null);
+}
+
+test "cr policy --help prints policy usage with task subcommand" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "policy", "--help" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr policy — Manage the access policy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "task <add|remove>") != null);
+}
+
+test "cr policy task --help prints task usage to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "--help" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr policy task — Manage task definitions") != null);
+}
+
+test "cr policy task add --help prints inner action usage to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "add", "--help" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr policy task add — Define a task") != null);
+}
+
+test "cr help secrets routes to secrets usage on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "help", "secrets" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr secrets — Manage secrets") != null);
+}
+
+test "cr help policy task add routes to deepest topic on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "help", "policy", "task", "add" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr policy task add — Define a task") != null);
+}
+
+test "cr bogus emits error to stderr, exit 1" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"bogus"}, "");
+    defer res.deinit(allocator);
+    try assertExitCode(res, 1);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown subcommand: bogus") != null);
+    try std.testing.expectEqualStrings("", res.stdout);
+}
+
+test "cr policy bogus emits unknown action to stderr without prompting, exit 1" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    // Empty stdin: if action validation ran AFTER the passphrase prompt,
+    // the subprocess would block on read. The fact that this test
+    // terminates at all asserts that validation runs first.
+    var res = try runCr(allocator, io, tmp.dir, &.{ "policy", "bogus" }, "");
+    defer res.deinit(allocator);
+    try assertExitCode(res, 1);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown policy action: bogus") != null);
+}
+
+test "cr policy task --help does not prompt for passphrase" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    // No stdin and no passphrase. If help fell through to the prompt
+    // path, the child would block. Terminating cleanly proves help
+    // short-circuits before any prompt or file I/O.
+    var res = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "--help" }, "");
+    defer res.deinit(allocator);
+    try assertExitOk(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "cr policy task — Manage task definitions") != null);
+}
+
+test "cr secrets bogus emits unknown action to stderr, exit 1" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "secrets", "bogus" }, "");
+    defer res.deinit(allocator);
+    try assertExitCode(res, 1);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown secrets action: bogus") != null);
+}
+
+// --- Channel discipline ---------------------------------------------------
+// Data output for every command lands on stdout so `cr <sub> | grep / jq`
+// works. Errors, warnings, and prompts continue to use stderr. These tests
+// pin the contract per command.
+
+test "cr init writes confirmation to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{ "init", "cora.zon" }, init_stdin);
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "wrote encrypted cora.zon") != null);
+}
+
+test "cr status writes state to stdout (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"status"}, "");
+    defer res.deinit(allocator);
+    try std.testing.expect(res.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "status: not running") != null);
+    try std.testing.expectEqualStrings("", res.stderr);
+}
+
+test "cr secrets list emits names on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "MY_TOKEN" }, pass_line ++ "v\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    var list = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+    defer list.deinit(allocator);
+    try std.testing.expect(list.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, list.stdout, "MY_TOKEN") != null);
+}
+
+test "cr secrets list emits (no secrets) on stdout when empty" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var list = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+    defer list.deinit(allocator);
+    try std.testing.expect(list.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, list.stdout, "(no secrets)") != null);
+}
+
+test "cr secrets set emits confirmation on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "K" }, pass_line ++ "v\n");
+    defer r.deinit(allocator);
+    try std.testing.expect(r.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "set K") != null);
+}
+
+test "cr policy allow confirmation lands on stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", "/bin/echo" }, pass_line);
+    defer r.deinit(allocator);
+    try std.testing.expect(r.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, r.stdout, "policy updated") != null);
+}
+
+test "cr bogus does not write anything to stdout" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var res = try runCr(allocator, io, tmp.dir, &.{"bogus"}, "");
+    defer res.deinit(allocator);
+    try assertExitCode(res, 1);
+    // Pipe-safety: errors must not contaminate stdout.
+    try std.testing.expectEqualStrings("", res.stdout);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown subcommand: bogus") != null);
+}
+
 test "policy allow preserves tasks (regression: finding 2)" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -301,7 +678,7 @@ test "policy allow preserves tasks (regression: finding 2)" {
     defer show.deinit(allocator);
     try std.testing.expect(show.exitOk());
 
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "tasks (1)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "demo") != null);
-    try std.testing.expect(std.mem.indexOf(u8, show.stderr, "allowed_callers (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "tasks (1)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "demo") != null);
+    try std.testing.expect(std.mem.indexOf(u8, show.stdout, "allowed_callers (1)") != null);
 }
