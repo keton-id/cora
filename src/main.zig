@@ -100,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
             usage.printVerify(io, .stdout);
             return;
         }
-        try cmdVerify(args);
+        try cmdVerify(io, args);
         return;
     }
     if (std.mem.eql(u8, sub, "policy")) {
@@ -312,7 +312,7 @@ fn cmdInit(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
     defer ef.deinit();
 
     try cora.store.writeFile(io, cwd, path, ef.bytes);
-    std.debug.print("wrote encrypted {s} ({d} bytes)\n", .{ path, ef.bytes.len });
+    usage.outPrint(io, "wrote encrypted {s} ({d} bytes)\n", .{ path, ef.bytes.len });
 }
 
 fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []const []const u8) !void {
@@ -368,7 +368,7 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
                 std.process.exit(1);
             }
             if (pid != 0) {
-                std.debug.print("service started (pid {d}) at {s}\n", .{ pid, sock_path });
+                usage.outPrint(io, "service started (pid {d}) at {s}\n", .{ pid, sock_path });
                 std.process.exit(0);
             }
             _ = std.c.setsid();
@@ -395,9 +395,9 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
         .audit_logger = &audit_logger,
     }, &secrets);
     defer svc.deinit();
-    if (foreground) std.debug.print("listening at {s} (foreground)\n", .{sock_path});
+    if (foreground) usage.outPrint(io, "listening at {s} (foreground)\n", .{sock_path});
     try svc.run();
-    std.debug.print("service exited\n", .{});
+    usage.outPrint(io, "service exited\n", .{});
 }
 
 fn cmdAudit(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void {
@@ -461,9 +461,9 @@ fn cmdAudit(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !voi
 
     if (is_tail) {
         const start = if (lines.items.len > n) lines.items.len - n else 0;
-        for (lines.items[start..]) |line| std.debug.print("{s}\n", .{line});
+        for (lines.items[start..]) |line| usage.outPrint(io, "{s}\n", .{line});
     } else {
-        for (lines.items) |line| std.debug.print("{s}\n", .{line});
+        for (lines.items) |line| usage.outPrint(io, "{s}\n", .{line});
     }
 }
 
@@ -475,12 +475,12 @@ fn cmdLock(allocator: std.mem.Allocator, io: Io) !void {
         std.process.exit(1);
     }
     try cora.client.lock(allocator, io, sock_path);
-    std.debug.print("locked\n", .{});
+    usage.outPrint(io, "locked\n", .{});
 }
 
 fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void {
     if (args.len < 4) {
-        std.debug.print("usage: cr exec TASK -- argv...\n", .{});
+        usage.printExec(io, .stderr);
         std.process.exit(1);
     }
     const task_name = args[2];
@@ -488,6 +488,7 @@ fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void
     while (sep < args.len and !std.mem.eql(u8, args[sep], "--")) : (sep += 1) {}
     if (sep + 1 >= args.len) {
         std.debug.print("missing -- argv\n", .{});
+        usage.printExec(io, .stderr);
         std.process.exit(1);
     }
     const argv = args[sep + 1 ..];
@@ -502,11 +503,11 @@ fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void
         std.debug.print("exec failed: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
-    std.debug.print("child pid {d} exit {d}\n", .{ resp.child_pid, resp.exit_code });
+    usage.outPrint(io, "child pid {d} exit {d}\n", .{ resp.child_pid, resp.exit_code });
     if (resp.exit_code != 0) std.process.exit(@intCast(@as(u32, @bitCast(resp.exit_code & 0xff))));
 }
 
-fn cmdVerify(args: []const []const u8) !void {
+fn cmdVerify(io: Io, args: []const []const u8) !void {
     var pid: i32 = 0;
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
@@ -519,14 +520,14 @@ fn cmdVerify(args: []const []const u8) !void {
         }
     }
     if (pid == 0) {
-        std.debug.print("usage: cr verify --pid <pid>\n", .{});
+        usage.printVerify(io, .stderr);
         std.process.exit(1);
     }
     const ident = cora.identity.lookupByPid(pid) catch {
         std.debug.print("could not look up pid {d}\n", .{pid});
         std.process.exit(1);
     };
-    std.debug.print("pid {d} uid {d} bin {s}\n", .{ ident.pid, ident.uid, ident.path() });
+    usage.outPrint(io, "pid {d} uid {d} bin {s}\n", .{ ident.pid, ident.uid, ident.path() });
 }
 
 fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []const []const u8) !void {
@@ -623,14 +624,14 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     defer cora.policy.free(allocator, &pol);
 
     if (is_show) {
-        std.debug.print("idle_timeout_ms: {d}\n", .{pol.idle_timeout_ms});
-        std.debug.print("allowed_callers ({d}):\n", .{pol.allowed_callers.len});
-        for (pol.allowed_callers) |c| std.debug.print("  {s}\n", .{c});
-        std.debug.print("tasks ({d}):\n", .{pol.tasks.len});
+        usage.outPrint(io, "idle_timeout_ms: {d}\n", .{pol.idle_timeout_ms});
+        usage.outPrint(io, "allowed_callers ({d}):\n", .{pol.allowed_callers.len});
+        for (pol.allowed_callers) |c| usage.outPrint(io, "  {s}\n", .{c});
+        usage.outPrint(io, "tasks ({d}):\n", .{pol.tasks.len});
         for (pol.tasks) |t| {
-            std.debug.print("  {s}: ", .{t.name});
-            for (t.allowed_secrets) |s| std.debug.print("{s} ", .{s});
-            std.debug.print("\n", .{});
+            usage.outPrint(io, "  {s}: ", .{t.name});
+            for (t.allowed_secrets) |s| usage.outPrint(io, "{s} ", .{s});
+            usage.outPrint(io, "\n", .{});
         }
         return;
     }
@@ -649,7 +650,7 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
         for (pol.allowed_callers) |c| try next_list.append(allocator, c);
         for (pol.allowed_callers) |c| {
             if (std.mem.eql(u8, c, target)) {
-                std.debug.print("already allowed: {s}\n", .{target});
+                usage.outPrint(io, "already allowed: {s}\n", .{target});
                 return;
             }
         }
@@ -672,7 +673,7 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     defer secrets.deinit();
     try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &secrets);
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &secrets, new_cfg);
-    std.debug.print("policy updated\n", .{});
+    usage.outPrint(io, "policy updated\n", .{});
 }
 
 /// Mutating half of `cr policy task <add|remove> NAME [SECRETS...]`.
@@ -719,23 +720,23 @@ fn cmdPolicyTask(
     try cora.secrets_codec.decode(allocator, secrets_plaintext, &secrets_store);
     const cwd = Io.Dir.cwd();
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &secrets_store, new_cfg);
-    std.debug.print("policy updated\n", .{});
+    usage.outPrint(io, "policy updated\n", .{});
 }
 
 fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     var sock_buf: [128]u8 = undefined;
     const sock_path = try cora.service.defaultSocketPath(&sock_buf);
     if (!cora.client.isRunning(io, sock_path)) {
-        std.debug.print("status: not running\n", .{});
+        usage.outPrint(io, "status: not running\n", .{});
         if (builtin.os.tag == .windows) {
-            std.debug.print("  mode: " ++ windows_preview_label ++ " (degraded trust model — see SECURITY.md)\n", .{});
+            usage.outPrint(io, "  mode: " ++ windows_preview_label ++ " (degraded trust model — see SECURITY.md)\n", .{});
         }
         return;
     }
     const s = try cora.client.status(allocator, io, sock_path);
-    std.debug.print("status: running\n  secrets: {d}\n  idle remaining: {d} ms\n", .{ s.secrets_count, s.idle_remaining_ms });
+    usage.outPrint(io, "status: running\n  secrets: {d}\n  idle remaining: {d} ms\n", .{ s.secrets_count, s.idle_remaining_ms });
     if (builtin.os.tag == .windows) {
-        std.debug.print("  mode: windows-preview (degraded trust model — see SECURITY.md)\n", .{});
+        usage.outPrint(io, "  mode: windows-preview (degraded trust model — see SECURITY.md)\n", .{});
     }
 }
 
@@ -771,7 +772,7 @@ fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []
 
     try store_.put(key, value);
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
-    std.debug.print("set {s}\n", .{key});
+    usage.outPrint(io, "set {s}\n", .{key});
 }
 
 fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
@@ -797,11 +798,11 @@ fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void 
     };
 
     if (store_.count() == 0) {
-        std.debug.print("(no secrets)\n", .{});
+        usage.outPrint(io, "(no secrets)\n", .{});
         return;
     }
     var it = store_.map.keyIterator();
-    while (it.next()) |k| std.debug.print("{s}\n", .{k.*});
+    while (it.next()) |k| usage.outPrint(io, "{s}\n", .{k.*});
 }
 
 fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {
@@ -835,7 +836,7 @@ fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key:
         std.process.exit(1);
     }
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
-    std.debug.print("deleted {s}\n", .{key});
+    usage.outPrint(io, "deleted {s}\n", .{key});
 }
 
 fn fileExists(io: Io, dir: Io.Dir, path: []const u8) bool {
