@@ -62,6 +62,9 @@ pub fn run(_: std.mem.Allocator, io: Io) !void {
     defer app.deinit();
     try app.refreshAll();
 
+    try draw(&app, &vx);
+    try vx.render(tty.writer());
+
     while (!app.should_quit) {
         const event = try loop.nextEvent();
         switch (event) {
@@ -449,7 +452,7 @@ fn draw(app: *App, vx: *vaxis.Vaxis) !void {
     root.clear();
     root.hideCursor();
 
-    if (root.width < 72 or root.height < 20) {
+    if (root.width < 72 or root.height < 24) {
         drawCompact(root);
         return;
     }
@@ -507,7 +510,7 @@ fn draw(app: *App, vx: *vaxis.Vaxis) !void {
 }
 
 fn drawCompact(root: vaxis.Window) void {
-    const warning = "Terminal too small for pane layout. Resize to at least 72x20.";
+    const warning = "Terminal too small for pane layout. Resize to at least 72x24.";
     _ = root.printSegment(.{
         .text = warning,
         .style = .{ .fg = theme.warn, .bold = true },
@@ -547,6 +550,7 @@ fn drawSidebar(app: *const App, win: vaxis.Window) void {
     printText(win, 0, 0, "Navigation", .{ .fg = theme.muted, .bold = true });
     for (items, 0..) |item, idx| {
         const row: u16 = @intCast(2 + idx * 3);
+        if (row + 2 > win.height) break;
         const selected = item.view == app.active_view;
         const item_win = win.child(.{
             .y_off = @intCast(row),
