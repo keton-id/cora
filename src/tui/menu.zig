@@ -601,27 +601,65 @@ fn drawContent(app: *const App, win: vaxis.Window) void {
 
 fn drawDashboard(app: *const App, win: vaxis.Window) void {
     printPaneTitle(win, "Dashboard", "Live service state and config snapshot");
-    drawStatCard(win, 0, 3, "Service", if (app.status.service_reachable)
-        (if (app.status.running) "Running" else "Reachable")
-    else
-        "Offline", if (app.status.service_reachable) theme.accent else theme.danger);
 
     var count_buf: [32]u8 = undefined;
     const count_text = std.fmt.bufPrint(&count_buf, "{d}", .{app.status.secrets_count}) catch "0";
-    drawStatCard(win, 22, 3, "Secrets", count_text, theme.ink);
 
     var idle_buf: [32]u8 = undefined;
     const idle_text = std.fmt.bufPrint(&idle_buf, "{d} ms", .{app.status.idle_remaining_ms}) catch "n/a";
-    drawStatCard(win, 44, 3, "Idle TTL", idle_text, theme.ink);
 
+    const service_text = if (app.status.service_reachable)
+        (if (app.status.running) "Running" else "Reachable")
+    else
+        "Offline";
+    const service_color = if (app.status.service_reachable) theme.accent else theme.danger;
     const config_text = if (app.has_config) "cora.zon detected" else "no cora.zon in cwd";
-    drawStatCard(win, 0, 9, "Config", config_text, if (app.has_config) theme.accent else theme.warn);
+    const config_color = if (app.has_config) theme.accent else theme.warn;
 
-    printText(win, 0, 15, "Socket Path", .{ .fg = theme.muted, .bold = true });
-    printText(win, 0, 16, app.socket_path[0..app.socket_path_len], .{ .fg = theme.ink });
+    const cards = [_]struct { label: []const u8, value: []const u8, color: vaxis.Color }{
+        .{ .label = "Service", .value = service_text, .color = service_color },
+        .{ .label = "Secrets", .value = count_text, .color = theme.ink },
+        .{ .label = "Idle TTL", .value = idle_text, .color = theme.ink },
+        .{ .label = "Config", .value = config_text, .color = config_color },
+    };
 
-    printText(win, 0, 19, "Quick Actions", .{ .fg = theme.muted, .bold = true });
-    printText(win, 0, 20, "r refresh dashboard, down opens audit, Enter on Lock Service opens confirm modal", .{ .fg = theme.ink });
+    const gap: u16 = 1;
+    const min_card: u16 = 18;
+    const cards_per_row: u16 = if (win.width >= 3 * min_card + 2 * gap)
+        3
+    else if (win.width >= 2 * min_card + gap)
+        2
+    else
+        1;
+    const card_height: u16 = 4;
+    const row_gap: u16 = 2;
+    const card_width: u16 = blk: {
+        const total_gap = gap * (cards_per_row - 1);
+        if (win.width <= total_gap) break :blk min_card;
+        const w = (win.width - total_gap) / cards_per_row;
+        break :blk @min(@max(min_card, w), 24);
+    };
+
+    var next_y: u16 = 3;
+    for (cards, 0..) |card, idx| {
+        const col: u16 = @intCast(idx % cards_per_row);
+        const row: u16 = @intCast(idx / cards_per_row);
+        const x = col * (card_width + gap);
+        const y = 3 + row * (card_height + row_gap);
+        drawStatCard(win, x, y, card_width, card.label, card.value, card.color);
+        next_y = y + card_height + row_gap;
+    }
+
+    if (next_y + 4 <= win.height) {
+        printText(win, 0, next_y, "Socket Path", .{ .fg = theme.muted, .bold = true });
+        printText(win, 0, next_y + 1, app.socket_path[0..app.socket_path_len], .{ .fg = theme.ink });
+        next_y += 3;
+    }
+
+    if (next_y + 2 <= win.height) {
+        printText(win, 0, next_y, "Quick Actions", .{ .fg = theme.muted, .bold = true });
+        printText(win, 0, next_y + 1, "r refresh  Enter activate pane  ? help  l lock  q quit", .{ .fg = theme.ink });
+    }
 }
 
 fn drawAudit(app: *const App, win: vaxis.Window) void {
@@ -806,9 +844,10 @@ fn drawPassphraseModal(app: *const App, root: vaxis.Window) void {
     printText(modal, 0, 6, "Enter load  Esc cancel", .{ .fg = theme.muted });
 }
 
-fn drawStatCard(win: vaxis.Window, x: u16, y: u16, label: []const u8, value: []const u8, value_color: vaxis.Color) void {
-    const width: u16 = @min(20, win.width -| x);
+fn drawStatCard(win: vaxis.Window, x: u16, y: u16, requested_width: u16, label: []const u8, value: []const u8, value_color: vaxis.Color) void {
+    const width: u16 = @min(requested_width, win.width -| x);
     if (width < 10) return;
+    if (y + 4 > win.height) return;
     const card = win.child(.{
         .x_off = @intCast(x),
         .y_off = @intCast(y),
