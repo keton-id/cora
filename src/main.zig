@@ -496,11 +496,25 @@ fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void
         std.debug.print("service not running — run `cr unlock` first\n", .{});
         std.process.exit(1);
     }
+    if (builtin.os.tag == .windows) {
+        // On Windows the Named Pipe transport cannot piggyback the
+        // caller's stdin/stdout/stderr the way POSIX SCM_RIGHTS does,
+        // so the spawned child currently inherits the daemon's NUL
+        // stdio and any output it produces is dropped. The operator
+        // sees `child pid N exit 0` with no other visible signal.
+        // Surface this once per invocation so the silence isn't a
+        // surprise; a follow-up will plumb fds via DuplicateHandle.
+        std.debug.print("warning: child stdio is dropped on windows — fd passing not yet implemented\n", .{});
+    }
     const resp = cora.client.exec(allocator, io, sock_path, task_name, argv) catch |err| {
         std.debug.print("exec failed: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
-    usage.outPrint(io, "child pid {d} exit {d}\n", .{ resp.child_pid, resp.exit_code });
+    // Route the spawn metadata to stderr so `cr exec t -- gh api ... > out.json`
+    // stays pipe-friendly: the child's stdout reaches the file without the
+    // trailing `child pid N exit M` line contaminating it. Stderr keeps the
+    // line visible to interactive operators.
+    std.debug.print("child pid {d} exit {d}\n", .{ resp.child_pid, resp.exit_code });
     if (resp.exit_code != 0) std.process.exit(@intCast(@as(u32, @bitCast(resp.exit_code & 0xff))));
 }
 
