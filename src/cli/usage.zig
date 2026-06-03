@@ -363,8 +363,12 @@ const secrets_list_text =
     \\Usage:
     \\  cr secrets list
     \\
-    \\Prompts for the passphrase and prints one name per line. Values are
-    \\never printed.
+    \\Prints one secret name per line. Values are never printed.
+    \\
+    \\When the service is unlocked, the names are fetched from the
+    \\running process and no passphrase is prompted. When the service is
+    \\locked, the vault is decrypted from disk and the passphrase is
+    \\required.
     \\
 ;
 
@@ -419,9 +423,13 @@ const policy_show_text =
     \\Usage:
     \\  cr policy show
     \\
-    \\Prompts for the passphrase. Output includes idle_timeout_ms, the
-    \\allowed_callers list, and every task definition with its allowed
-    \\secrets.
+    \\Output includes idle_timeout_ms, the allowed_callers list, and
+    \\every task definition with its allowed secrets.
+    \\
+    \\When the service is unlocked, the summary is fetched from the
+    \\running process and no passphrase is prompted. When the service is
+    \\locked, the vault is decrypted from disk and the passphrase is
+    \\required.
     \\
 ;
 

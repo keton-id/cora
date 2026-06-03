@@ -10,6 +10,8 @@ pub const Op = enum(u8) {
     lock = 0x03,
     task_declare = 0x04,
     spawn = 0x05,
+    secrets_list = 0x06,
+    policy_show = 0x07,
     err = 0x7f,
     _,
 };
@@ -152,6 +154,53 @@ pub fn decodeSpawnPayload(allocator: std.mem.Allocator, payload: []const u8) !Pa
     return .{ .task_name = task_name, .argv = argv, .allocator = allocator };
 }
 
+/// Encode a flat list of names (secret keys, policy entries, etc.) as:
+///   u16 count + repeated (u16 name_len + name_bytes)
+/// Reused by `secrets_list` responses. Caller owns the returned slice.
+pub fn encodeNameList(allocator: std.mem.Allocator, names: []const []const u8) ![]u8 {
+    var total: usize = 2;
+    for (names) |n| total += 2 + n.len;
+    const out = try allocator.alloc(u8, total);
+    errdefer allocator.free(out);
+
+    var i: usize = 0;
+    std.mem.writeInt(u16, out[i..][0..2], @intCast(names.len), .little);
+    i += 2;
+    for (names) |n| {
+        std.mem.writeInt(u16, out[i..][0..2], @intCast(n.len), .little);
+        i += 2;
+        @memcpy(out[i..][0..n.len], n);
+        i += n.len;
+    }
+    return out;
+}
+
+/// Iterator over a payload produced by `encodeNameList`. Returned name
+/// slices alias the payload buffer — copy them if outliving the frame.
+pub const NameListIter = struct {
+    payload: []const u8,
+    cursor: usize,
+    remaining: u16,
+
+    pub fn next(self: *NameListIter) ?[]const u8 {
+        if (self.remaining == 0) return null;
+        if (self.payload.len < self.cursor + 2) return null;
+        const name_len = std.mem.readInt(u16, self.payload[self.cursor..][0..2], .little);
+        self.cursor += 2;
+        if (self.payload.len < self.cursor + name_len) return null;
+        const name = self.payload[self.cursor..][0..name_len];
+        self.cursor += name_len;
+        self.remaining -= 1;
+        return name;
+    }
+};
+
+pub fn decodeNameList(payload: []const u8) !NameListIter {
+    if (payload.len < 2) return CoraError.Io;
+    const count = std.mem.readInt(u16, payload[0..2], .little);
+    return .{ .payload = payload, .cursor = 2, .remaining = count };
+}
+
 test "writeFrame/readFrame roundtrip" {
     var buf: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer buf.deinit();
@@ -177,6 +226,27 @@ test "encodeSpawnPayload/decodeSpawnPayload roundtrip" {
     try std.testing.expectEqualStrings("gh", parsed.argv[0]);
     try std.testing.expectEqualStrings("repo", parsed.argv[1]);
     try std.testing.expectEqualStrings("list", parsed.argv[2]);
+}
+
+test "encodeNameList/decodeNameList roundtrip" {
+    const names: []const []const u8 = &.{ "GH_TOKEN", "AWS_SECRET", "OPENAI_API_KEY" };
+    const payload = try encodeNameList(std.testing.allocator, names);
+    defer std.testing.allocator.free(payload);
+
+    var iter = try decodeNameList(payload);
+    try std.testing.expectEqualStrings("GH_TOKEN", iter.next().?);
+    try std.testing.expectEqualStrings("AWS_SECRET", iter.next().?);
+    try std.testing.expectEqualStrings("OPENAI_API_KEY", iter.next().?);
+    try std.testing.expect(iter.next() == null);
+}
+
+test "encodeNameList/decodeNameList handles empty list" {
+    const empty: []const []const u8 = &.{};
+    const payload = try encodeNameList(std.testing.allocator, empty);
+    defer std.testing.allocator.free(payload);
+
+    var iter = try decodeNameList(payload);
+    try std.testing.expect(iter.next() == null);
 }
 
 test "StatusResp encode/decode roundtrip" {
