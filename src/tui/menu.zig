@@ -14,6 +14,7 @@ const Modal = union(enum) {
     none,
     confirm_lock,
     passphrase,
+    help,
 };
 
 const StatusSnapshot = struct {
@@ -52,6 +53,7 @@ pub fn run(_: std.mem.Allocator, io: Io) !void {
     defer vx.deinit(allocator, tty.writer());
 
     var loop: vaxis.Loop(vaxis.Event) = .init(io, &tty, &vx);
+    try loop.installResizeHandler();
     try loop.start();
     defer loop.stop();
 
@@ -61,6 +63,9 @@ pub fn run(_: std.mem.Allocator, io: Io) !void {
     var app = try App.init(allocator, io);
     defer app.deinit();
     try app.refreshAll();
+
+    try draw(&app, &vx);
+    try vx.render(tty.writer());
 
     while (!app.should_quit) {
         const event = try loop.nextEvent();
@@ -127,9 +132,15 @@ const App = struct {
         switch (self.modal) {
             .confirm_lock => return self.handleConfirmLockKey(key),
             .passphrase => return self.handlePassphraseKey(key),
+            .help => return self.handleHelpKey(key),
             .none => {},
         }
 
+        if (key.matches('?', .{}) or key.matches('?', .{ .shift = true })) {
+            self.modal = .help;
+            self.setMessage("Help open. Press Esc to close.");
+            return;
+        }
         if (key.matches('q', .{}) or key.matches(vaxis.Key.escape, .{})) {
             self.should_quit = true;
             return;
@@ -139,6 +150,10 @@ const App = struct {
             return;
         }
         if (key.matches('l', .{})) {
+            if (!self.serviceRunning()) {
+                self.setMessage("Service already locked.");
+                return;
+            }
             self.modal = .confirm_lock;
             self.setMessage("Press Enter to confirm lock.");
             return;
@@ -181,6 +196,16 @@ const App = struct {
         if (key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.kp_enter, .{})) {
             try self.lockService();
             self.modal = .none;
+        }
+    }
+
+    fn handleHelpKey(self: *App, key: vaxis.Key) !void {
+        if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{}) or
+            key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.kp_enter, .{}) or
+            key.matches('?', .{}) or key.matches('?', .{ .shift = true }))
+        {
+            self.modal = .none;
+            self.setMessage("Help closed.");
         }
     }
 
@@ -356,6 +381,10 @@ const App = struct {
                 self.setMessage("Enter passphrase to load secret names.");
             },
             .lock => {
+                if (!self.serviceRunning()) {
+                    self.setMessage("Service already locked.");
+                    return;
+                }
                 self.modal = .confirm_lock;
                 self.setMessage("Press Enter to confirm lock.");
             },
@@ -425,6 +454,11 @@ const App = struct {
         return self.message_buf[0..self.message_len];
     }
 
+    fn serviceRunning(self: *App) bool {
+        const sock_path = self.socket_path[0..self.socket_path_len];
+        return cora.client.isRunning(self.io, sock_path);
+    }
+
     fn secureClearPassphrase(self: *App) void {
         std.crypto.secureZero(u8, &self.passphrase_buf);
         self.passphrase_len = 0;
@@ -436,7 +470,7 @@ fn draw(app: *App, vx: *vaxis.Vaxis) !void {
     root.clear();
     root.hideCursor();
 
-    if (root.width < 72 or root.height < 20) {
+    if (root.width < 72 or root.height < 24) {
         drawCompact(root);
         return;
     }
@@ -489,12 +523,13 @@ fn draw(app: *App, vx: *vaxis.Vaxis) !void {
     switch (app.modal) {
         .confirm_lock => drawConfirmModal(root),
         .passphrase => drawPassphraseModal(app, root),
+        .help => drawHelpModal(root),
         .none => {},
     }
 }
 
 fn drawCompact(root: vaxis.Window) void {
-    const warning = "Terminal too small for pane layout. Resize to at least 72x20.";
+    const warning = "Terminal too small for pane layout. Resize to at least 72x24.";
     _ = root.printSegment(.{
         .text = warning,
         .style = .{ .fg = theme.warn, .bold = true },
@@ -534,6 +569,7 @@ fn drawSidebar(app: *const App, win: vaxis.Window) void {
     printText(win, 0, 0, "Navigation", .{ .fg = theme.muted, .bold = true });
     for (items, 0..) |item, idx| {
         const row: u16 = @intCast(2 + idx * 3);
+        if (row + 2 > win.height) break;
         const selected = item.view == app.active_view;
         const item_win = win.child(.{
             .y_off = @intCast(row),
@@ -565,27 +601,65 @@ fn drawContent(app: *const App, win: vaxis.Window) void {
 
 fn drawDashboard(app: *const App, win: vaxis.Window) void {
     printPaneTitle(win, "Dashboard", "Live service state and config snapshot");
-    drawStatCard(win, 0, 3, "Service", if (app.status.service_reachable)
-        (if (app.status.running) "Running" else "Reachable")
-    else
-        "Offline", if (app.status.service_reachable) theme.accent else theme.danger);
 
     var count_buf: [32]u8 = undefined;
     const count_text = std.fmt.bufPrint(&count_buf, "{d}", .{app.status.secrets_count}) catch "0";
-    drawStatCard(win, 22, 3, "Secrets", count_text, theme.ink);
 
     var idle_buf: [32]u8 = undefined;
     const idle_text = std.fmt.bufPrint(&idle_buf, "{d} ms", .{app.status.idle_remaining_ms}) catch "n/a";
-    drawStatCard(win, 44, 3, "Idle TTL", idle_text, theme.ink);
 
+    const service_text = if (app.status.service_reachable)
+        (if (app.status.running) "Running" else "Reachable")
+    else
+        "Offline";
+    const service_color = if (app.status.service_reachable) theme.accent else theme.danger;
     const config_text = if (app.has_config) "cora.zon detected" else "no cora.zon in cwd";
-    drawStatCard(win, 0, 9, "Config", config_text, if (app.has_config) theme.accent else theme.warn);
+    const config_color = if (app.has_config) theme.accent else theme.warn;
 
-    printText(win, 0, 15, "Socket Path", .{ .fg = theme.muted, .bold = true });
-    printText(win, 0, 16, app.socket_path[0..app.socket_path_len], .{ .fg = theme.ink });
+    const cards = [_]struct { label: []const u8, value: []const u8, color: vaxis.Color }{
+        .{ .label = "Service", .value = service_text, .color = service_color },
+        .{ .label = "Secrets", .value = count_text, .color = theme.ink },
+        .{ .label = "Idle TTL", .value = idle_text, .color = theme.ink },
+        .{ .label = "Config", .value = config_text, .color = config_color },
+    };
 
-    printText(win, 0, 19, "Quick Actions", .{ .fg = theme.muted, .bold = true });
-    printText(win, 0, 20, "r refresh dashboard, down opens audit, Enter on Lock Service opens confirm modal", .{ .fg = theme.ink });
+    const gap: u16 = 1;
+    const min_card: u16 = 18;
+    const cards_per_row: u16 = if (win.width >= 3 * min_card + 2 * gap)
+        3
+    else if (win.width >= 2 * min_card + gap)
+        2
+    else
+        1;
+    const card_height: u16 = 4;
+    const row_gap: u16 = 2;
+    const card_width: u16 = blk: {
+        const total_gap = gap * (cards_per_row - 1);
+        if (win.width <= total_gap) break :blk min_card;
+        const w = (win.width - total_gap) / cards_per_row;
+        break :blk @min(@max(min_card, w), 24);
+    };
+
+    var next_y: u16 = 3;
+    for (cards, 0..) |card, idx| {
+        const col: u16 = @intCast(idx % cards_per_row);
+        const row: u16 = @intCast(idx / cards_per_row);
+        const x = col * (card_width + gap);
+        const y = 3 + row * (card_height + row_gap);
+        drawStatCard(win, x, y, card_width, card.label, card.value, card.color);
+        next_y = y + card_height + row_gap;
+    }
+
+    if (next_y + 4 <= win.height) {
+        printText(win, 0, next_y, "Socket Path", .{ .fg = theme.muted, .bold = true });
+        printText(win, 0, next_y + 1, app.socket_path[0..app.socket_path_len], .{ .fg = theme.ink });
+        next_y += 3;
+    }
+
+    if (next_y + 2 <= win.height) {
+        printText(win, 0, next_y, "Quick Actions", .{ .fg = theme.muted, .bold = true });
+        printText(win, 0, next_y + 1, "r refresh  Enter activate pane  ? help  l lock  q quit", .{ .fg = theme.ink });
+    }
 }
 
 fn drawAudit(app: *const App, win: vaxis.Window) void {
@@ -666,8 +740,47 @@ fn drawLock(app: *const App, win: vaxis.Window) void {
 
 fn drawFooter(app: *const App, win: vaxis.Window) void {
     printText(win, 0, 0, "Hotkeys", .{ .fg = theme.muted, .bold = true });
-    printText(win, 0, 1, "j/k or arrows navigate  Enter open  PgUp/PgDn scroll  r refresh  l lock  q quit", .{ .fg = theme.ink });
+    printText(win, 0, 1, "j/k or arrows navigate  Enter open  PgUp/PgDn scroll  r refresh  l lock  ? help  q quit", .{ .fg = theme.ink });
     printText(win, 0, 2, app.message(), .{ .fg = theme.muted });
+}
+
+fn drawHelpModal(root: vaxis.Window) void {
+    const width: u16 = @min(64, root.width -| 6);
+    const height: u16 = 16;
+    const x: i17 = @intCast((root.width - width) / 2);
+    const y: i17 = @intCast((root.height - height) / 2);
+    const modal = root.child(.{
+        .x_off = x,
+        .y_off = y,
+        .width = width,
+        .height = height,
+        .border = panelBorder(theme.accent),
+    });
+    modal.fill(.{
+        .char = .{ .grapheme = " ", .width = 1 },
+        .style = .{ .bg = theme.panel_alt },
+    });
+    printText(modal, 0, 0, "Keyboard Help", .{ .fg = theme.accent, .bold = true });
+
+    const rows = [_]struct { keys: []const u8, desc: []const u8 }{
+        .{ .keys = "j / k or arrows", .desc = "cycle panes" },
+        .{ .keys = "Enter", .desc = "open pane action" },
+        .{ .keys = "PgUp / PgDn", .desc = "scroll (also Ctrl+u / Ctrl+d)" },
+        .{ .keys = "g / G", .desc = "jump to top / bottom" },
+        .{ .keys = "r", .desc = "refresh active pane" },
+        .{ .keys = "l", .desc = "lock service (if running)" },
+        .{ .keys = "?", .desc = "toggle this help" },
+        .{ .keys = "q / Esc", .desc = "quit TUI" },
+    };
+
+    var row: u16 = 2;
+    for (rows) |entry| {
+        printText(modal, 0, row, entry.keys, .{ .fg = theme.ink, .bold = true });
+        printText(modal, 18, row, entry.desc, .{ .fg = theme.muted });
+        row += 1;
+    }
+
+    printText(modal, 0, height - 3, "Esc / Enter / ? closes this dialog", .{ .fg = theme.muted });
 }
 
 fn drawConfirmModal(root: vaxis.Window) void {
@@ -713,7 +826,7 @@ fn drawPassphraseModal(app: *const App, root: vaxis.Window) void {
     const input = modal.child(.{
         .y_off = 3,
         .width = modal.width,
-        .height = 2,
+        .height = 3,
         .border = panelBorder(theme.chrome),
     });
     input.fill(.{
@@ -731,9 +844,10 @@ fn drawPassphraseModal(app: *const App, root: vaxis.Window) void {
     printText(modal, 0, 6, "Enter load  Esc cancel", .{ .fg = theme.muted });
 }
 
-fn drawStatCard(win: vaxis.Window, x: u16, y: u16, label: []const u8, value: []const u8, value_color: vaxis.Color) void {
-    const width: u16 = @min(20, win.width -| x);
+fn drawStatCard(win: vaxis.Window, x: u16, y: u16, requested_width: u16, label: []const u8, value: []const u8, value_color: vaxis.Color) void {
+    const width: u16 = @min(requested_width, win.width -| x);
     if (width < 10) return;
+    if (y + 4 > win.height) return;
     const card = win.child(.{
         .x_off = @intCast(x),
         .y_off = @intCast(y),
