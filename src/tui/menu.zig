@@ -14,6 +14,7 @@ const Modal = union(enum) {
     none,
     confirm_lock,
     passphrase,
+    help,
 };
 
 const StatusSnapshot = struct {
@@ -130,9 +131,15 @@ const App = struct {
         switch (self.modal) {
             .confirm_lock => return self.handleConfirmLockKey(key),
             .passphrase => return self.handlePassphraseKey(key),
+            .help => return self.handleHelpKey(key),
             .none => {},
         }
 
+        if (key.matches('?', .{}) or key.matches('?', .{ .shift = true })) {
+            self.modal = .help;
+            self.setMessage("Help open. Press Esc to close.");
+            return;
+        }
         if (key.matches('q', .{}) or key.matches(vaxis.Key.escape, .{})) {
             self.should_quit = true;
             return;
@@ -188,6 +195,16 @@ const App = struct {
         if (key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.kp_enter, .{})) {
             try self.lockService();
             self.modal = .none;
+        }
+    }
+
+    fn handleHelpKey(self: *App, key: vaxis.Key) !void {
+        if (key.matches(vaxis.Key.escape, .{}) or key.matches('q', .{}) or
+            key.matches(vaxis.Key.enter, .{}) or key.matches(vaxis.Key.kp_enter, .{}) or
+            key.matches('?', .{}) or key.matches('?', .{ .shift = true }))
+        {
+            self.modal = .none;
+            self.setMessage("Help closed.");
         }
     }
 
@@ -505,6 +522,7 @@ fn draw(app: *App, vx: *vaxis.Vaxis) !void {
     switch (app.modal) {
         .confirm_lock => drawConfirmModal(root),
         .passphrase => drawPassphraseModal(app, root),
+        .help => drawHelpModal(root),
         .none => {},
     }
 }
@@ -683,8 +701,47 @@ fn drawLock(app: *const App, win: vaxis.Window) void {
 
 fn drawFooter(app: *const App, win: vaxis.Window) void {
     printText(win, 0, 0, "Hotkeys", .{ .fg = theme.muted, .bold = true });
-    printText(win, 0, 1, "j/k or arrows navigate  Enter open  PgUp/PgDn scroll  r refresh  l lock  q quit", .{ .fg = theme.ink });
+    printText(win, 0, 1, "j/k or arrows navigate  Enter open  PgUp/PgDn scroll  r refresh  l lock  ? help  q quit", .{ .fg = theme.ink });
     printText(win, 0, 2, app.message(), .{ .fg = theme.muted });
+}
+
+fn drawHelpModal(root: vaxis.Window) void {
+    const width: u16 = @min(64, root.width -| 6);
+    const height: u16 = 16;
+    const x: i17 = @intCast((root.width - width) / 2);
+    const y: i17 = @intCast((root.height - height) / 2);
+    const modal = root.child(.{
+        .x_off = x,
+        .y_off = y,
+        .width = width,
+        .height = height,
+        .border = panelBorder(theme.accent),
+    });
+    modal.fill(.{
+        .char = .{ .grapheme = " ", .width = 1 },
+        .style = .{ .bg = theme.panel_alt },
+    });
+    printText(modal, 0, 0, "Keyboard Help", .{ .fg = theme.accent, .bold = true });
+
+    const rows = [_]struct { keys: []const u8, desc: []const u8 }{
+        .{ .keys = "j / k or arrows", .desc = "cycle panes" },
+        .{ .keys = "Enter", .desc = "open pane action" },
+        .{ .keys = "PgUp / PgDn", .desc = "scroll (also Ctrl+u / Ctrl+d)" },
+        .{ .keys = "g / G", .desc = "jump to top / bottom" },
+        .{ .keys = "r", .desc = "refresh active pane" },
+        .{ .keys = "l", .desc = "lock service (if running)" },
+        .{ .keys = "?", .desc = "toggle this help" },
+        .{ .keys = "q / Esc", .desc = "quit TUI" },
+    };
+
+    var row: u16 = 2;
+    for (rows) |entry| {
+        printText(modal, 0, row, entry.keys, .{ .fg = theme.ink, .bold = true });
+        printText(modal, 18, row, entry.desc, .{ .fg = theme.muted });
+        row += 1;
+    }
+
+    printText(modal, 0, height - 3, "Esc / Enter / ? closes this dialog", .{ .fg = theme.muted });
 }
 
 fn drawConfirmModal(root: vaxis.Window) void {
