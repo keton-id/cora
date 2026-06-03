@@ -1,13 +1,19 @@
-//! Daemonize the Cora service on Windows by spawning the foreground
-//! code path as a detached child process.
+//! Windows `CreateProcessW` helpers used by two distinct code paths:
 //!
-//! POSIX uses fork() + setsid() + stdio redirection (`src/main.zig`
-//! cmdUnlock). Windows has no fork; instead we re-exec `cr unlock
-//! --foreground` via `CreateProcessW` with `DETACHED_PROCESS |
-//! CREATE_NEW_PROCESS_GROUP` and pipe the passphrase across stdin
-//! exactly once. The child's foreground-mode code reads from stdin
-//! via the existing `readSecret` path (`main.zig`), then closes its
-//! end of the pipe and proceeds normally.
+//! 1. `spawnDetachedForeground` — daemonize the Cora service on
+//!    Windows by re-execing `cr unlock --foreground` as a detached
+//!    child, piping the passphrase across stdin once. POSIX uses
+//!    fork() + setsid() + stdio redirection (`src/main.zig`
+//!    cmdUnlock); Windows has no fork, so we go through CreateProcessW
+//!    with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`.
+//!
+//! 2. `spawnInheritingStdio` + `waitForExit` — used by the service to
+//!    spawn `cr exec`'s target binary while inheriting the caller's
+//!    stdin/stdout/stderr handles (already duplicated into the daemon
+//!    process by `pipe_windows.duplicateClientStdio`). This is the
+//!    Windows counterpart to POSIX `SCM_RIGHTS` fd passing — the child
+//!    writes directly to the caller's terminal/pipes instead of the
+//!    daemon's `NUL` stdio.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -110,7 +116,27 @@ extern "kernel32" fn GetModuleFileNameW(
 
 extern "kernel32" fn GetCommandLineW() callconv(.winapi) LPWSTR;
 
+extern "kernel32" fn WaitForSingleObject(
+    hHandle: HANDLE,
+    dwMilliseconds: DWORD,
+) callconv(.winapi) DWORD;
+
+extern "kernel32" fn GetExitCodeProcess(
+    hProcess: HANDLE,
+    lpExitCode: *DWORD,
+) callconv(.winapi) BOOL;
+
+pub const INFINITE: DWORD = 0xFFFFFFFF;
+
 pub const Spawned = struct {
+    pid: u32,
+};
+
+pub const ChildProcess = struct {
+    /// Process handle for `WaitForSingleObject` + `GetExitCodeProcess`.
+    /// Caller owns the handle and must close it (or use `waitForExit`,
+    /// which closes it as part of waiting).
+    process: HANDLE,
     pid: u32,
 };
 
@@ -237,10 +263,103 @@ pub fn spawnDetachedForeground(
     return .{ .pid = pi.dwProcessId };
 }
 
+/// Spawn a child process inheriting three already-duplicated stdio
+/// handles. The handles must live in the *current* process (the
+/// service) — typically produced by `pipe_windows.duplicateClientStdio`
+/// after `DuplicateHandle`-ing the caller's `GetStdHandle` values into
+/// the daemon.
+///
+/// `cmdline_z` must be a null-terminated UTF-16 command line. The
+/// `exe_wide` path is used as `lpApplicationName`; argv resolution is
+/// the caller's responsibility (the policy layer resolves and rewrites
+/// argv[0] before this point).
+///
+/// `env_block_wide`, when non-null, must be a Windows wide-character
+/// environment block: a sequence of `KEY=VALUE\0` UTF-16 entries
+/// terminated by an extra `\0`. Pass `null` to inherit the daemon's
+/// environment unchanged.
+///
+/// On success the returned `ChildProcess.process` handle is **open and
+/// owned by the caller** — pass it to `waitForExit` or close it
+/// manually.
+///
+/// The three stdio handles are **not** closed by this function.
+/// The caller is expected to close them after `CreateProcessW`
+/// returns (regardless of success), because the kernel duplicates
+/// them into the child as part of the spawn.
+pub fn spawnInheritingStdio(
+    exe_wide: LPCWSTR,
+    cmdline_z: LPWSTR,
+    env_block_wide: LPVOID,
+    stdio: [3]HANDLE,
+) !ChildProcess {
+    var si = STARTUPINFOW{
+        .cb = @sizeOf(STARTUPINFOW),
+        .lpReserved = null,
+        .lpDesktop = null,
+        .lpTitle = null,
+        .dwX = 0,
+        .dwY = 0,
+        .dwXSize = 0,
+        .dwYSize = 0,
+        .dwXCountChars = 0,
+        .dwYCountChars = 0,
+        .dwFillAttribute = 0,
+        .dwFlags = STARTF_USESTDHANDLES,
+        .wShowWindow = 0,
+        .cbReserved2 = 0,
+        .lpReserved2 = null,
+        .hStdInput = stdio[0],
+        .hStdOutput = stdio[1],
+        .hStdError = stdio[2],
+    };
+
+    var pi = std.mem.zeroes(PROCESS_INFORMATION);
+
+    const flags: DWORD = if (env_block_wide != null) CREATE_UNICODE_ENVIRONMENT else 0;
+
+    const ok = CreateProcessW(
+        exe_wide,
+        cmdline_z,
+        null,
+        null,
+        1, // bInheritHandles — required for the stdio handles to cross
+        flags,
+        env_block_wide,
+        null,
+        &si,
+        &pi,
+    );
+
+    if (ok == 0) return error.CreateProcessFailed;
+
+    _ = CloseHandle(pi.hThread);
+    return .{ .process = pi.hProcess, .pid = pi.dwProcessId };
+}
+
+/// Wait for a child spawned by `spawnInheritingStdio` to exit, return
+/// its exit code, and close the process handle. Returns the exit code
+/// even when it is non-zero; only infrastructure failures (the wait
+/// itself, or reading the exit code) bubble as errors.
+pub fn waitForExit(child: ChildProcess) !u32 {
+    _ = WaitForSingleObject(child.process, INFINITE);
+    var code: DWORD = 0;
+    if (GetExitCodeProcess(child.process, &code) == 0) {
+        _ = CloseHandle(child.process);
+        return error.GetExitCodeFailed;
+    }
+    _ = CloseHandle(child.process);
+    return code;
+}
+
 test "spawn_windows compiles" {
     // Type-level sanity: forces the externs above through the type
     // checker on cross-compiled Windows builds without invoking them.
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     const _spawn = &spawnDetachedForeground;
     _ = _spawn;
+    const _inherit = &spawnInheritingStdio;
+    _ = _inherit;
+    const _wait = &waitForExit;
+    _ = _wait;
 }
