@@ -5,6 +5,8 @@ pub const CoraError = error{
     NoActiveTask,
     SecretNotAllowedForTask,
     CallerNotAllowed,
+    TargetNotAllowed,
+    TargetNotFound,
     InvalidConfig,
     InvalidPassphrase,
     PassphraseTooShort,

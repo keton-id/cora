@@ -13,6 +13,19 @@ pub const Event = union(enum) {
     secret_injected: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     secret_missing: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     task_end: struct { ts_ms: i64, task: []const u8, exit_code: i32, duration_ms: i64 },
+    /// Emitted when the spawn target (argv[0] after PATH resolution) is
+    /// not in the task's `allowed_targets`. Distinct from `caller_rejected`
+    /// — the caller passed kernel identity verification and the task
+    /// exists; what failed is the second gate (which binary the caller
+    /// asked us to spawn).
+    target_rejected: struct {
+        ts_ms: i64,
+        caller_pid: i32,
+        caller_bin: []const u8,
+        task: []const u8,
+        target: []const u8,
+        reason: []const u8,
+    },
 };
 
 pub const Logger = struct {
@@ -156,6 +169,20 @@ pub fn encode(ev: Event, w: *Io.Writer) !void {
             try s.objectField("duration_ms");
             try s.write(v.duration_ms);
         },
+        .target_rejected => |v| {
+            try s.objectField("ts_ms");
+            try s.write(v.ts_ms);
+            try s.objectField("caller_pid");
+            try s.write(v.caller_pid);
+            try s.objectField("caller_bin");
+            try s.write(v.caller_bin);
+            try s.objectField("task");
+            try s.write(v.task);
+            try s.objectField("target");
+            try s.write(v.target);
+            try s.objectField("reason");
+            try s.write(v.reason);
+        },
     }
     try s.endObject();
 }
@@ -224,6 +251,25 @@ test "encode secret_missing distinct from secret_injected" {
     try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"secret_missing\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "\"secret_name\":\"MISSING_KEY\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "secret_injected") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
+}
+
+test "encode target_rejected" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encode(.{ .target_rejected = .{
+        .ts_ms = 17,
+        .caller_pid = 4321,
+        .caller_bin = "/usr/local/bin/cr",
+        .task = "github",
+        .target = "/bin/echo",
+        .reason = "target not in allowed_targets",
+    } }, &aw.writer);
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"target_rejected\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"task\":\"github\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"target\":\"/bin/echo\"") != null);
+    // No secret value or env contents in the audit record.
     try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
 }
 

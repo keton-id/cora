@@ -493,13 +493,29 @@ const policy_task_add_text =
     \\cr policy task add — Define a task
     \\
     \\Usage:
-    \\  cr policy task add NAME [SECRETS...]
+    \\  cr policy task add NAME [--target PATH ...] [SECRETS...]
     \\
     \\Arguments:
     \\  NAME                                 Task name
     \\  SECRETS...                           Allowed secret names (zero or more)
     \\
+    \\Options:
+    \\  --target PATH                        Absolute path of a binary that
+    \\                                       may be the spawn target (argv[0])
+    \\                                       for this task. Repeatable. If
+    \\                                       omitted entirely, any binary is
+    \\                                       allowed (dev mode) — same
+    \\                                       behavior as allowed_callers when
+    \\                                       its list is empty.
+    \\
     \\Replaces any existing task with the same name.
+    \\
+    \\Without --target, a trusted caller can still leak a secret value by
+    \\spawning `/bin/echo $TOKEN`, `/bin/cat /proc/self/environ`, or
+    \\`/usr/bin/printenv`. Listing the binaries the task is actually meant
+    \\to drive closes that hole. Example:
+    \\
+    \\  cr policy task add github --target /usr/bin/gh GH_TOKEN
     \\
 ;
 
