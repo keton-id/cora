@@ -8,6 +8,17 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.8.1-alpha.1](https://github.com/keton-id/cora/compare/v0.8.0-alpha.1...v0.8.1-alpha.1) (2026-06-03)
+
+
+### Bug Fixes
+
+* **cli:** skip passphrase for `secrets list` and `policy show` when service unlocked ([5878d13](https://github.com/keton-id/cora/commit/5878d138fefc582804a6df676af704133cf65396))
+* land PR [#32](https://github.com/keton-id/cora/issues/32) and [#34](https://github.com/keton-id/cora/issues/34) on main ([245dd6c](https://github.com/keton-id/cora/commit/245dd6c497ebddab04f6346b39ad13f2a5370d8a))
+* **service,cli:** force lock shutdown + star-echo passphrase ([54112d4](https://github.com/keton-id/cora/commit/54112d439de26bc4bd4079e1ee983ef063d1b405))
+* **service:** exempt mgmt ops (ping/status/lock) from caller policy ([29fa5a8](https://github.com/keton-id/cora/commit/29fa5a83ae53ed2830dfcaf96d56d3440b015f29))
+* **service:** exempt mgmt ops from caller policy ([fd03748](https://github.com/keton-id/cora/commit/fd03748db347936c3f0d9da9230e75575f3e3394))
+
 ## [0.8.0-alpha.1](https://github.com/keton-id/cora/compare/v0.7.0-alpha.1...v0.8.0-alpha.1) (2026-06-02)
 
 
