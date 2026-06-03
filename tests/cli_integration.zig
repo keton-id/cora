@@ -584,6 +584,186 @@ test "cr bogus does not write anything to stdout" {
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "unknown subcommand: bogus") != null);
 }
 
+// --- cr exec stdio passing (POSIX) ----------------------------------------
+// Cora's daemon (cr unlock) detaches stdio to /dev/null on the fork+setsid
+// path. Before SCM_RIGHTS fd passing was added, every cr exec child inherited
+// that /dev/null stdio and any stdout/stderr it produced was silently
+// dropped — the operator saw `child pid N exit 0` with no other evidence.
+// This test locks the contract that cr exec attaches the caller's stdio so
+// the child's output is captured.
+
+fn pollStatus(allocator: std.mem.Allocator, io: Io, dir: Io.Dir, want_running: bool) !void {
+    // The daemon fork returns to the parent before Service.start has bound
+    // the socket, so a quick `cr status` right after `cr unlock` can race
+    // and miss the running state. Retry briefly until it agrees with the
+    // expected state.
+    var attempts: usize = 0;
+    while (attempts < 30) : (attempts += 1) {
+        var res = try runCr(allocator, io, dir, &.{"status"}, "");
+        defer res.deinit(allocator);
+        const says_running = std.mem.indexOf(u8, res.stdout, "status: running") != null;
+        if (says_running == want_running) return;
+        io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .awake) catch {};
+    }
+    return error.StatusPollTimedOut;
+}
+
+test "cr exec attaches caller stdio so child output is captured (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", opts.cr_bin_path }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "add", "demo", "MY_VAR" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "MY_VAR" }, pass_line ++ "expected-value\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    // Background-spawn the daemon, then poll status until ready.
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"unlock"}, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    try pollStatus(allocator, io, tmp.dir, true);
+
+    // Ensure we always lock, even if the assertions below fail, so other
+    // tests aren't left fighting a stale daemon over /tmp/cora-<uid>.sock.
+    var lock_done = false;
+    defer if (!lock_done) {
+        if (runCr(allocator, io, tmp.dir, &.{"lock"}, "")) |r| {
+            var owned = r;
+            owned.deinit(allocator);
+        } else |_| {}
+    };
+
+    {
+        var r = try runCr(
+            allocator,
+            io,
+            tmp.dir,
+            &.{ "exec", "demo", "--", "/usr/bin/env", "sh", "-c", "printf 'MY_VAR=%s' \"$MY_VAR\"" },
+            "",
+        );
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        // The CRITICAL assertion: child stdout must reach the cr exec
+        // caller's stdout. Pre-fix this was always empty.
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "MY_VAR=expected-value") != null);
+    }
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"lock"}, "");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        lock_done = true;
+    }
+    try pollStatus(allocator, io, tmp.dir, false);
+}
+
+test "cr exec rejects spawn target outside task allowed_targets (POSIX-only)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", opts.cr_bin_path }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        // Allow only /usr/bin/env as the spawn target. /bin/echo and the
+        // rest of the canonical "leak" tools (cat, printenv) must be
+        // rejected even though the caller (cr itself) is whitelisted.
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "add", "guarded", "--target", "/usr/bin/env", "MY_VAR" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "MY_VAR" }, pass_line ++ "expected-value\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"unlock"}, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    try pollStatus(allocator, io, tmp.dir, true);
+
+    var lock_done = false;
+    defer if (!lock_done) {
+        if (runCr(allocator, io, tmp.dir, &.{"lock"}, "")) |r| {
+            var owned = r;
+            owned.deinit(allocator);
+        } else |_| {}
+    };
+
+    // Positive: /usr/bin/env is whitelisted → secret reaches child env.
+    {
+        var r = try runCr(
+            allocator,
+            io,
+            tmp.dir,
+            &.{ "exec", "guarded", "--", "/usr/bin/env", "sh", "-c", "printf 'MY_VAR=%s' \"$MY_VAR\"" },
+            "",
+        );
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "MY_VAR=expected-value") != null);
+    }
+
+    // Negative: /bin/echo is NOT in allowed_targets. Service must reject
+    // the spawn before injecting MY_VAR, so the secret never reaches the
+    // child env and never lands on the caller's stdout.
+    {
+        var r = try runCr(
+            allocator,
+            io,
+            tmp.dir,
+            &.{ "exec", "guarded", "--", "/bin/echo", "leaked=$MY_VAR" },
+            "",
+        );
+        defer r.deinit(allocator);
+        try std.testing.expect(!r.exitOk());
+        // Whatever the precise error name the client prints, it must NOT
+        // be the literal expected-value (i.e. nothing got injected and
+        // printed).
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "expected-value") == null);
+        try std.testing.expect(std.mem.indexOf(u8, r.stderr, "exec failed") != null);
+    }
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"lock"}, "");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        lock_done = true;
+    }
+    try pollStatus(allocator, io, tmp.dir, false);
+}
+
 test "policy allow preserves tasks (regression: finding 2)" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

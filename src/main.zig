@@ -496,11 +496,25 @@ fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void
         std.debug.print("service not running — run `cr unlock` first\n", .{});
         std.process.exit(1);
     }
+    if (builtin.os.tag == .windows) {
+        // On Windows the Named Pipe transport cannot piggyback the
+        // caller's stdin/stdout/stderr the way POSIX SCM_RIGHTS does,
+        // so the spawned child currently inherits the daemon's NUL
+        // stdio and any output it produces is dropped. The operator
+        // sees `child pid N exit 0` with no other visible signal.
+        // Surface this once per invocation so the silence isn't a
+        // surprise; a follow-up will plumb fds via DuplicateHandle.
+        std.debug.print("warning: child stdio is dropped on windows — fd passing not yet implemented\n", .{});
+    }
     const resp = cora.client.exec(allocator, io, sock_path, task_name, argv) catch |err| {
         std.debug.print("exec failed: {s}\n", .{@errorName(err)});
         std.process.exit(1);
     };
-    usage.outPrint(io, "child pid {d} exit {d}\n", .{ resp.child_pid, resp.exit_code });
+    // Route the spawn metadata to stderr so `cr exec t -- gh api ... > out.json`
+    // stays pipe-friendly: the child's stdout reaches the file without the
+    // trailing `child pid N exit M` line contaminating it. Stderr keeps the
+    // line visible to interactive operators.
+    std.debug.print("child pid {d} exit {d}\n", .{ resp.child_pid, resp.exit_code });
     if (resp.exit_code != 0) std.process.exit(@intCast(@as(u32, @bitCast(resp.exit_code & 0xff))));
 }
 
@@ -703,12 +717,43 @@ fn cmdPolicyTask(
     var next: std.ArrayList(cora.policy.Task) = .empty;
     defer next.deinit(allocator);
 
+    // Lifted to function scope so the slices stay alive across
+    // `cora.policy.serialize`, which reads through `next.items` to
+    // borrowed slices in these lists.
+    var targets: std.ArrayList([]const u8) = .empty;
+    defer targets.deinit(allocator);
+    var secrets_list: std.ArrayList([]const u8) = .empty;
+    defer secrets_list.deinit(allocator);
+
     if (std.mem.eql(u8, sub, "add")) {
-        const secrets = args[5..];
+        // Split args[5..] into `--target PATH` flag pairs and positional
+        // secret names. `--target` is repeatable; everything that is not
+        // a flag/flag-value is treated as a secret name. Order between
+        // flags and secrets does not matter, but `--target` must be
+        // immediately followed by a path (a missing value is rejected).
+        var i: usize = 5;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--target")) {
+                if (i + 1 >= args.len) {
+                    std.debug.print("--target requires a path argument\n", .{});
+                    usage.printPolicyTaskAdd(io, .stderr);
+                    std.process.exit(1);
+                }
+                try targets.append(allocator, args[i + 1]);
+                i += 1;
+                continue;
+            }
+            try secrets_list.append(allocator, args[i]);
+        }
+
         for (pol.tasks) |t| {
             if (!std.mem.eql(u8, t.name, name)) try next.append(allocator, t);
         }
-        try next.append(allocator, .{ .name = name, .allowed_secrets = secrets });
+        try next.append(allocator, .{
+            .name = name,
+            .allowed_secrets = secrets_list.items,
+            .allowed_targets = targets.items,
+        });
     } else { // "remove" — validated by caller
         for (pol.tasks) |t| {
             if (!std.mem.eql(u8, t.name, name)) try next.append(allocator, t);

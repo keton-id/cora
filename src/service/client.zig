@@ -174,10 +174,86 @@ pub fn exec(
     const payload = try proto.encodeSpawnPayload(allocator, task_name, argv);
     defer allocator.free(payload);
 
-    var f2 = try conn.roundtrip(.spawn, payload);
+    if (builtin.os.tag == .windows) {
+        // Windows Named Pipe transport: SCM_RIGHTS not supported. The
+        // daemon's stdio is already detached to /dev/null/NUL, so child
+        // process output is currently lost on Windows. Tracked for a
+        // follow-up using `DuplicateHandle` through the pipe.
+        var f2 = try conn.roundtrip(.spawn, payload);
+        defer f2.deinit(allocator);
+        if (f2.op == @intFromEnum(proto.Op.err)) return CoraError.SecretNotAllowedForTask;
+        if (f2.op != @intFromEnum(proto.Op.spawn)) return CoraError.Io;
+        return proto.SpawnResp.decode(f2.payload);
+    }
+
+    // POSIX: send the spawn frame via `sendmsg` so we can attach our own
+    // stdin/stdout/stderr to the message via SCM_RIGHTS. The service
+    // dup2s them into the child process, which lets `cr exec` show the
+    // child's output on the caller's terminal instead of dropping it
+    // into the daemon's `/dev/null` stdio (inherited from fork+setsid).
+    var frame_buf = try allocator.alloc(u8, 6 + payload.len);
+    defer allocator.free(frame_buf);
+    frame_buf[0] = proto.protocol_version;
+    frame_buf[1] = @intFromEnum(proto.Op.spawn);
+    std.mem.writeInt(u32, frame_buf[2..6], @intCast(payload.len), .little);
+    @memcpy(frame_buf[6..], payload);
+
+    try sendFrameWithStdioFds(conn.stream.socket.handle, frame_buf);
+
+    var f2 = try conn.readFrame();
     defer f2.deinit(allocator);
     if (f2.op == @intFromEnum(proto.Op.err)) return CoraError.SecretNotAllowedForTask;
     if (f2.op != @intFromEnum(proto.Op.spawn)) return CoraError.Io;
-
     return proto.SpawnResp.decode(f2.payload);
+}
+
+/// POSIX-only. Send `frame_bytes` over `fd` with our own stdin/stdout/stderr
+/// attached as a single SCM_RIGHTS control message. The service receives
+/// the frame and the three fds in one `recvmsg` call, so the child it
+/// spawns can inherit the caller's terminal. Refuses to fall back to a
+/// plain write — losing the fds would silently revert to the broken
+/// `/dev/null` child-stdio behavior, and `cr exec` callers expect to see
+/// their child's output.
+fn sendFrameWithStdioFds(fd: std.posix.fd_t, frame_bytes: []const u8) !void {
+    if (builtin.os.tag == .windows) unreachable;
+
+    const Fds = [3]std.posix.fd_t;
+    const fds: Fds = .{
+        std.posix.STDIN_FILENO,
+        std.posix.STDOUT_FILENO,
+        std.posix.STDERR_FILENO,
+    };
+
+    const hdr_len = @sizeOf(std.c.cmsghdr);
+    const data_len = @sizeOf(Fds);
+
+    var cmsg_buf: [hdr_len + data_len]u8 align(@alignOf(std.c.cmsghdr)) = undefined;
+    const cmsg: *std.c.cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
+    cmsg.* = .{
+        .len = @intCast(hdr_len + data_len),
+        .level = std.posix.SOL.SOCKET,
+        .type = std.posix.SCM.RIGHTS,
+    };
+    @memcpy(cmsg_buf[hdr_len..][0..data_len], std.mem.asBytes(&fds));
+
+    var iov = [_]std.posix.iovec_const{
+        .{ .base = frame_bytes.ptr, .len = frame_bytes.len },
+    };
+    var msg: std.c.msghdr_const = .{
+        .name = null,
+        .namelen = 0,
+        .iov = &iov,
+        .iovlen = 1,
+        .control = @ptrCast(&cmsg_buf),
+        .controllen = @intCast(cmsg_buf.len),
+        .flags = 0,
+    };
+
+    const n = std.c.sendmsg(fd, &msg, 0);
+    if (n < 0) return CoraError.Io;
+    // Spawn frames are bounded by max_payload_len (1 MiB) and our control
+    // socket is SOCK_STREAM, so a short write is theoretically possible
+    // but practically does not happen for the payload sizes we send.
+    // Refuse rather than silently send the remainder without the fds.
+    if (@as(usize, @intCast(n)) != frame_bytes.len) return CoraError.Io;
 }

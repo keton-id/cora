@@ -348,18 +348,23 @@ pub const Service = struct {
                     } });
                     try proto.writeFrame(&writer.interface, .task_declare, "");
                     try writer.interface.flush();
+                    // Drop out of the buffered-read loop. The next frame is
+                    // the spawn message and the POSIX client attaches its
+                    // stdio fds to it via SCM_RIGHTS — we have to use raw
+                    // recvmsg to receive those fds, and that has to happen
+                    // on a clean socket with no pre-buffered bytes ahead of
+                    // it. The synchronous task_declare ack guarantees the
+                    // client has not yet sent the spawn frame, so the
+                    // socket buffer is empty when we exit the loop.
+                    break;
                 },
                 .spawn => {
-                    if (task_name_len == 0) {
-                        try proto.writeFrame(&writer.interface, .err, "no task declared");
-                        try writer.interface.flush();
-                        continue;
-                    }
-                    self.handleSpawn(&writer.interface, task_name_buf[0..task_name_len], frame.payload) catch |err| {
-                        std.log.warn("spawn failed: {s}", .{@errorName(err)});
-                        try proto.writeFrame(&writer.interface, .err, @errorName(err));
-                        try writer.interface.flush();
-                    };
+                    // Protocol violation: spawn without prior task_declare.
+                    // (Normal clients break out of the loop on task_declare
+                    // and never re-enter this arm.)
+                    try proto.writeFrame(&writer.interface, .err, "no task declared");
+                    try writer.interface.flush();
+                    return;
                 },
                 .secrets_list => {
                     const names = self.secrets.names(self.allocator) catch |err| {
@@ -394,15 +399,116 @@ pub const Service = struct {
                 },
             }
         }
+
+        // Reached here only via the `.task_declare` break above. Now read
+        // the spawn frame and (on POSIX) the SCM_RIGHTS-attached stdio fds.
+        if (task_name_len == 0) return;
+
+        var stdio_fds: ?[3]std.posix.fd_t = null;
+        defer {
+            if (stdio_fds) |fds| {
+                for (fds) |fd| _ = std.c.close(fd);
+            }
+        }
+
+        var spawn_frame = blk: {
+            if (builtin.os.tag == .windows) {
+                // Windows transport (Named Pipes) cannot piggyback fds the
+                // way SCM_RIGHTS does on POSIX. Read the spawn frame via
+                // the existing buffered reader. The child will inherit the
+                // daemon's /dev/null stdio — `cmdExec` emits a stderr
+                // warning before connecting so the operator knows output
+                // is going to be lost on this platform.
+                break :blk proto.readFrame(&reader.interface, self.allocator) catch return;
+            }
+            break :blk recvFrameWithStdioFds(stream.idHandle(), self.allocator, &stdio_fds) catch return;
+        };
+        defer spawn_frame.deinit(self.allocator);
+
+        if (requiresCallerPolicy(.spawn) and !self.policy.isCallerAllowed(ident.path())) {
+            _ = self.rejected.fetchAdd(1, .monotonic);
+            self.emit(.{ .caller_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .pid = ident.pid,
+                .binary = ident.path(),
+                .reason = "binary not in allowed_callers",
+            } });
+            try proto.writeFrame(&writer.interface, .err, "caller not allowed");
+            try writer.interface.flush();
+            return;
+        }
+
+        if (spawn_frame.op != @intFromEnum(proto.Op.spawn)) {
+            try proto.writeFrame(&writer.interface, .err, "expected spawn");
+            try writer.interface.flush();
+            return;
+        }
+
+        self.handleSpawn(&writer.interface, &ident, task_name_buf[0..task_name_len], spawn_frame.payload, stdio_fds) catch |err| {
+            std.log.warn("spawn failed: {s}", .{@errorName(err)});
+            proto.writeFrame(&writer.interface, .err, @errorName(err)) catch {};
+            writer.interface.flush() catch {};
+        };
     }
 
-    fn handleSpawn(self: *Service, writer: *Io.Writer, declared_task: []const u8, payload: []const u8) !void {
+    fn handleSpawn(
+        self: *Service,
+        writer: *Io.Writer,
+        ident: *const identity.CallerIdentity,
+        declared_task: []const u8,
+        payload: []const u8,
+        stdio_fds: ?[3]std.posix.fd_t,
+    ) !void {
         var parsed = try proto.decodeSpawnPayload(self.allocator, payload);
         defer parsed.deinit();
 
         if (!std.mem.eql(u8, parsed.task_name, declared_task)) return CoraError.NoActiveTask;
         const task = self.policy.findTask(declared_task) orelse return CoraError.NoActiveTask;
         if (parsed.argv.len == 0) return CoraError.InvalidConfig;
+
+        // Resolve argv[0] to an absolute path and gate it against the
+        // task's allowed_targets. Without this gate a trusted caller can
+        // still leak a secret value by asking the service to spawn
+        // /bin/echo $TOKEN or /bin/cat /proc/self/environ — the caller
+        // policy doesn't stop that because the caller IS supposed to be
+        // trusted; the missing layer is "what is the trusted caller
+        // allowed to run." See policy.isTargetAllowedForTask. The
+        // resolution is also useful in dev-mode (no targets configured):
+        // it normalizes argv[0] so the audit log records the resolved
+        // path, not a relative name.
+        var resolved_buf: [identity.max_path_len]u8 = undefined;
+        const resolved = resolveTargetPath(parsed.argv[0], &resolved_buf) catch {
+            self.emit(.{ .target_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .caller_pid = ident.pid,
+                .caller_bin = ident.path(),
+                .task = declared_task,
+                .target = parsed.argv[0],
+                .reason = "binary not found in daemon PATH",
+            } });
+            try proto.writeFrame(writer, .err, "target not found");
+            try writer.flush();
+            return CoraError.TargetNotFound;
+        };
+
+        if (!policy_mod.isTargetAllowedForTask(task, resolved)) {
+            self.emit(.{ .target_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .caller_pid = ident.pid,
+                .caller_bin = ident.path(),
+                .task = declared_task,
+                .target = resolved,
+                .reason = "target not in allowed_targets",
+            } });
+            try proto.writeFrame(writer, .err, "target not allowed");
+            try writer.flush();
+            return CoraError.TargetNotAllowed;
+        }
+
+        // Rewrite argv[0] in place with the resolved absolute path so the
+        // child sees a deterministic argv and the spawn never falls back
+        // to its own PATH search (which might pick a different binary).
+        parsed.argv[0] = resolved;
 
         var env_map = std.process.Environ.Map.init(self.allocator);
         defer env_map.deinit();
@@ -430,10 +536,24 @@ pub const Service = struct {
         }
 
         const start_ms = nowMs(self.io);
-        var child = try std.process.spawn(self.io, .{
+
+        // Hand the caller's terminal to the child when the client sent
+        // stdio fds via SCM_RIGHTS. Without them the child inherits the
+        // daemon's `/dev/null` stdio (set up by fork+setsid in cmdUnlock),
+        // which silently swallows stdout — see the related fix in cmdExec
+        // that emits a warning on platforms where fd passing is not yet
+        // supported.
+        var spawn_opts: std.process.SpawnOptions = .{
             .argv = parsed.argv,
             .environ_map = &env_map,
-        });
+        };
+        if (stdio_fds) |fds| {
+            spawn_opts.stdin = .{ .file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } } };
+            spawn_opts.stdout = .{ .file = .{ .handle = fds[1], .flags = .{ .nonblocking = false } } };
+            spawn_opts.stderr = .{ .file = .{ .handle = fds[2], .flags = .{ .nonblocking = false } } };
+        }
+
+        var child = try std.process.spawn(self.io, spawn_opts);
         const child_pid: i32 = childPid(child);
 
         for (injected_names.items) |name| {
@@ -509,6 +629,124 @@ pub fn requiresCallerPolicy(op: proto.Op) bool {
     };
 }
 
+/// POSIX-only. Read the spawn frame from `fd` via `recvmsg`, capturing
+/// any SCM_RIGHTS control message the client attached (three stdio fds
+/// for the child process). Returns the parsed frame; the captured fds
+/// land in `fds_out` for the caller to dup into the child and then
+/// close. Falls back to leaving `fds_out` as `null` if the client did
+/// not attach a cmsg, in which case the child inherits the daemon's
+/// stdio (which is `/dev/null` on the standard fork+setsid path).
+fn recvFrameWithStdioFds(
+    fd: std.posix.fd_t,
+    allocator: std.mem.Allocator,
+    fds_out: *?[3]std.posix.fd_t,
+) !proto.Frame {
+    if (builtin.os.tag == .windows) unreachable;
+
+    var hdr: [6]u8 = undefined;
+    var hdr_got: usize = 0;
+
+    while (hdr_got < hdr.len) {
+        var iov = [_]std.posix.iovec{
+            .{ .base = @ptrCast(&hdr[hdr_got]), .len = hdr.len - hdr_got },
+        };
+        var cmsg_buf: [@sizeOf(std.c.cmsghdr) + @sizeOf([3]std.posix.fd_t)]u8 align(@alignOf(std.c.cmsghdr)) = undefined;
+        var msg: std.c.msghdr = .{
+            .name = null,
+            .namelen = 0,
+            .iov = &iov,
+            .iovlen = 1,
+            .control = @ptrCast(&cmsg_buf),
+            .controllen = @intCast(cmsg_buf.len),
+            .flags = 0,
+        };
+        const n = std.c.recvmsg(fd, &msg, 0);
+        if (n <= 0) return CoraError.Io;
+        hdr_got += @intCast(n);
+
+        // Ancillary data is delivered with the first recvmsg covering a
+        // given sendmsg. Capture once; later recvs for the rest of the
+        // header (rare for our small frames) won't carry cmsg again.
+        if (fds_out.* == null and msg.controllen >= @sizeOf(std.c.cmsghdr)) {
+            const cmsg: *const std.c.cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
+            if (cmsg.level == std.posix.SOL.SOCKET and cmsg.type == std.posix.SCM.RIGHTS) {
+                var fds: [3]std.posix.fd_t = undefined;
+                @memcpy(std.mem.asBytes(&fds), cmsg_buf[@sizeOf(std.c.cmsghdr)..][0..@sizeOf(@TypeOf(fds))]);
+                fds_out.* = fds;
+            }
+        }
+    }
+
+    if (hdr[0] != proto.protocol_version) return CoraError.UnsupportedVersion;
+    const op = hdr[1];
+    const len = std.mem.readInt(u32, hdr[2..6], .little);
+    if (len > proto.max_payload_len) return CoraError.Io;
+
+    const buf = try allocator.alloc(u8, len);
+    errdefer allocator.free(buf);
+
+    var payload_got: usize = 0;
+    while (payload_got < len) {
+        const n = std.c.recv(fd, @ptrCast(&buf[payload_got]), len - payload_got, 0);
+        if (n <= 0) return CoraError.Io;
+        payload_got += @intCast(n);
+    }
+
+    return .{ .op = op, .payload = buf };
+}
+
+/// Resolve `target` to an absolute path. Absolute inputs pass through
+/// verbatim. Relative inputs are searched against the daemon's `PATH`
+/// (inherited from the shell that ran `cr unlock`) and the first match
+/// that is executable for the daemon UID wins. Returns the resolved
+/// path stored in `out_buf`. Errors if the target cannot be found.
+///
+/// We do this server-side (rather than letting `std.process.spawn`
+/// resolve later) for two reasons:
+/// 1. The allowed_targets check needs the absolute path to compare.
+/// 2. After resolution we replace argv[0] with the absolute path so the
+///    actual spawn cannot drift into a different `PATH` and end up
+///    invoking a different binary than the one we audited / approved.
+fn resolveTargetPath(target: []const u8, out_buf: []u8) ![]const u8 {
+    if (target.len == 0) return error.TargetNotFound;
+
+    if (target[0] == '/' or (target.len >= 2 and target[0] == '.' and target[1] == '/') or
+        (target.len >= 3 and target[0] == '.' and target[1] == '.' and target[2] == '/'))
+    {
+        // Absolute or explicit relative: trust as-is, but it must
+        // actually exist and be executable.
+        if (target.len > out_buf.len) return error.TargetNotFound;
+        @memcpy(out_buf[0..target.len], target);
+        if (!isExecutable(out_buf[0..target.len])) return error.TargetNotFound;
+        return out_buf[0..target.len];
+    }
+
+    // Search daemon PATH.
+    const path_env_ptr = std.c.getenv("PATH") orelse return error.TargetNotFound;
+    const path_env = std.mem.span(path_env_ptr);
+
+    var it = std.mem.tokenizeScalar(u8, path_env, ':');
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const need_sep: usize = if (dir[dir.len - 1] == '/') 0 else 1;
+        const total = dir.len + need_sep + target.len;
+        if (total > out_buf.len) continue;
+        @memcpy(out_buf[0..dir.len], dir);
+        if (need_sep == 1) out_buf[dir.len] = '/';
+        @memcpy(out_buf[dir.len + need_sep ..][0..target.len], target);
+        const candidate = out_buf[0..total];
+        if (isExecutable(candidate)) return candidate;
+    }
+    return error.TargetNotFound;
+}
+
+fn isExecutable(path: []const u8) bool {
+    const path_z = std.posix.toPosixPath(path) catch return false;
+    // X_OK = 0x01 on POSIX. std.posix.access is not in 0.16 in a
+    // cross-portable shape, so use libc directly. Returns 0 on success.
+    return std.c.access(&path_z, 0x01) == 0;
+}
+
 /// Render the same human-readable policy summary that `cr policy show`
 /// emits when invoked against an offline vault. Used by the in-memory
 /// `policy_show` service op so the on-the-wire response matches the
@@ -520,9 +758,16 @@ pub fn renderPolicy(w: *Io.Writer, pol: *const policy_mod.Policy) !void {
     for (pol.allowed_callers) |c| try w.print("  {s}\n", .{c});
     try w.print("tasks ({d}):\n", .{pol.tasks.len});
     for (pol.tasks) |t| {
-        try w.print("  {s}: ", .{t.name});
-        for (t.allowed_secrets) |s| try w.print("{s} ", .{s});
+        try w.print("  {s}:\n", .{t.name});
+        try w.print("    secrets ({d}):", .{t.allowed_secrets.len});
+        for (t.allowed_secrets) |s| try w.print(" {s}", .{s});
         try w.print("\n", .{});
+        if (t.allowed_targets.len == 0) {
+            try w.print("    targets: (any — dev mode)\n", .{});
+        } else {
+            try w.print("    targets ({d}):\n", .{t.allowed_targets.len});
+            for (t.allowed_targets) |tgt| try w.print("      {s}\n", .{tgt});
+        }
     }
 }
 
