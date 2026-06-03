@@ -265,16 +265,6 @@ pub const Service = struct {
             } });
             return;
         };
-        if (!self.policy.isCallerAllowed(ident.path())) {
-            _ = self.rejected.fetchAdd(1, .monotonic);
-            self.emit(.{ .caller_rejected = .{
-                .ts_ms = nowMs(self.io),
-                .pid = ident.pid,
-                .binary = ident.path(),
-                .reason = "binary not in allowed_callers",
-            } });
-            return;
-        }
 
         var rbuf: [4096]u8 = undefined;
         var wbuf: [4096]u8 = undefined;
@@ -290,6 +280,19 @@ pub const Service = struct {
 
             self.timer.touch(self.io);
             const op: proto.Op = @enumFromInt(frame.op);
+
+            if (requiresCallerPolicy(op) and !self.policy.isCallerAllowed(ident.path())) {
+                _ = self.rejected.fetchAdd(1, .monotonic);
+                self.emit(.{ .caller_rejected = .{
+                    .ts_ms = nowMs(self.io),
+                    .pid = ident.pid,
+                    .binary = ident.path(),
+                    .reason = "binary not in allowed_callers",
+                } });
+                try proto.writeFrame(&writer.interface, .err, "caller not allowed");
+                try writer.interface.flush();
+                return;
+            }
 
             switch (op) {
                 .ping => {
@@ -451,6 +454,24 @@ fn zeroAll(s: *MemStore) void {
     while (it.next()) |entry| entry.value_ptr.*.zero();
 }
 
+/// Return true when the requested protocol op accesses secret values and
+/// therefore must be gated by `allowed_callers`. Management ops (ping /
+/// status / lock) operate on liveness or shutdown only — they do not leak
+/// secret values, so the same-uid + chmod 0600 (POSIX) / Named Pipe DACL
+/// (Windows) trust is sufficient and the cr CLI itself can drive them
+/// without being whitelisted.
+///
+/// Regression context: gating ping/status/lock by `allowed_callers` made
+/// `cr status` report "not running" whenever the user added any caller to
+/// the policy, because the cr binary itself was not on the list and the
+/// service silently dropped the connection.
+pub fn requiresCallerPolicy(op: proto.Op) bool {
+    return switch (op) {
+        .task_declare, .spawn => true,
+        else => false,
+    };
+}
+
 /// Force the bound AF_UNIX socket to mode 0600. No-op on Windows where
 /// the analogous protection is the Named Pipe DACL.
 fn restrictSocketPermissions(path: []const u8) !void {
@@ -502,4 +523,17 @@ test "restrictSocketPermissions forces 0600" {
         @as(std.posix.mode_t, 0o600),
         st.permissions.toMode() & 0o777,
     );
+}
+
+test "requiresCallerPolicy gates secret-touching ops only" {
+    // Management ops must bypass `allowed_callers` so that `cr status` /
+    // `cr lock` work even when the user has whitelisted other binaries
+    // (e.g. only `gh`) and not the cr binary itself.
+    try std.testing.expect(!requiresCallerPolicy(.ping));
+    try std.testing.expect(!requiresCallerPolicy(.status));
+    try std.testing.expect(!requiresCallerPolicy(.lock));
+
+    // Secret-touching ops MUST stay gated.
+    try std.testing.expect(requiresCallerPolicy(.task_declare));
+    try std.testing.expect(requiresCallerPolicy(.spawn));
 }
