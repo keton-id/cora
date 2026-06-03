@@ -713,7 +713,7 @@ fn drawPassphraseModal(app: *const App, root: vaxis.Window) void {
     const input = modal.child(.{
         .y_off = 3,
         .width = modal.width,
-        .height = 2,
+        .height = 3,
         .border = panelBorder(theme.chrome),
     });
     input.fill(.{
