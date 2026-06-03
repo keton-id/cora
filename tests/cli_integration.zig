@@ -595,15 +595,23 @@ test "cr bogus does not write anything to stdout" {
 fn pollStatus(allocator: std.mem.Allocator, io: Io, dir: Io.Dir, want_running: bool) !void {
     // The daemon fork returns to the parent before Service.start has bound
     // the socket, so a quick `cr status` right after `cr unlock` can race
-    // and miss the running state. Retry briefly until it agrees with the
-    // expected state.
+    // and miss the running state. Retry until it agrees with the expected
+    // state.
+    //
+    // Generous attempt budget because: (a) each iteration spawns a fresh
+    // `cr status` subprocess which is ~200ms on Windows CI runners, and
+    // (b) the daemon's Argon2id key derivation (t=3 m=65536KB p=4) plus
+    // service startup can easily take 5-10s on a slow GitHub Actions
+    // windows-latest runner before the named pipe is bound and `cr
+    // status` can connect.
+    const max_attempts: usize = 200;
     var attempts: usize = 0;
-    while (attempts < 30) : (attempts += 1) {
+    while (attempts < max_attempts) : (attempts += 1) {
         var res = try runCr(allocator, io, dir, &.{"status"}, "");
         defer res.deinit(allocator);
         const says_running = std.mem.indexOf(u8, res.stdout, "status: running") != null;
         if (says_running == want_running) return;
-        io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .awake) catch {};
+        io.sleep(.{ .nanoseconds = 100 * std.time.ns_per_ms }, .awake) catch {};
     }
     return error.StatusPollTimedOut;
 }
