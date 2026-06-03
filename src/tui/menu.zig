@@ -53,6 +53,7 @@ pub fn run(_: std.mem.Allocator, io: Io) !void {
     defer vx.deinit(allocator, tty.writer());
 
     var loop: vaxis.Loop(vaxis.Event) = .init(io, &tty, &vx);
+    try loop.installResizeHandler();
     try loop.start();
     defer loop.stop();
 
