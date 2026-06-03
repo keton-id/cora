@@ -25,4 +25,4 @@ cora-test
 Thumbs.db
 
 # npm publish staging — vendor/ is populated by CI from release artifacts
-npm/vendor/
+packaging/npm/vendor/

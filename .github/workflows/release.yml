@@ -248,19 +248,19 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
-          node cora/npm/scripts/prepare.mjs \
+          node cora/packaging/npm/scripts/prepare.mjs \
             --version "$VERSION" \
             --dist dist \
-            --npm cora/npm
+            --npm cora/packaging/npm
 
       - name: Pack preview (for the CI log)
-        working-directory: cora/npm
+        working-directory: cora/packaging/npm
         run: |
           set -euo pipefail
           npm pack --dry-run
 
       - name: Publish to npm
-        working-directory: cora/npm
+        working-directory: cora/packaging/npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CI tool: populate npm/vendor/<os-arch>/ with verified binaries from
+// CI tool: populate packaging/npm/vendor/<os-arch>/ with verified binaries from
 // the GitHub Release artifacts produced by .github/workflows/release.yml.
 //
 // Inputs (flags):
