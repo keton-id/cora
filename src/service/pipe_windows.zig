@@ -312,6 +312,20 @@ pub fn closeStdioDups(dups: [3]HANDLE) void {
     for (dups) |h| _ = CloseHandle(h);
 }
 
+test "stdio handle passing externs compile (Windows-only)" {
+    // Type-level fence: forces OpenProcess / DuplicateHandle / GetStdHandle
+    // through the type checker on cross-compiled Windows targets without
+    // executing them. Keeps the cr exec Windows arm honest when the
+    // surrounding code is touched in future refactors.
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    const _caller = &callerStdioHandles;
+    _ = _caller;
+    const _dup = &duplicateClientStdio;
+    _ = _dup;
+    const _close = &closeStdioDups;
+    _ = _close;
+}
+
 test "defaultPipeNameUtf8 prefixes pipe namespace (Windows-only)" {
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     var buf: [PipeNameMaxUtf8]u8 = undefined;
