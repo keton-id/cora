@@ -139,6 +139,10 @@ const App = struct {
             return;
         }
         if (key.matches('l', .{})) {
+            if (!self.serviceRunning()) {
+                self.setMessage("Service already locked.");
+                return;
+            }
             self.modal = .confirm_lock;
             self.setMessage("Press Enter to confirm lock.");
             return;
@@ -356,6 +360,10 @@ const App = struct {
                 self.setMessage("Enter passphrase to load secret names.");
             },
             .lock => {
+                if (!self.serviceRunning()) {
+                    self.setMessage("Service already locked.");
+                    return;
+                }
                 self.modal = .confirm_lock;
                 self.setMessage("Press Enter to confirm lock.");
             },
@@ -423,6 +431,11 @@ const App = struct {
 
     fn message(self: *const App) []const u8 {
         return self.message_buf[0..self.message_len];
+    }
+
+    fn serviceRunning(self: *App) bool {
+        const sock_path = self.socket_path[0..self.socket_path_len];
+        return cora.client.isRunning(self.io, sock_path);
     }
 
     fn secureClearPassphrase(self: *App) void {
