@@ -136,6 +136,25 @@ Binary path resolved per OS:
 Matched against `Policy.allowed_callers` from decrypted `cora.zon` config block.
 Empty `allowed_callers` = dev-mode allow-all.
 
+### `cr exec` Stdio Passing
+
+The daemon detaches its own stdio to `/dev/null` / `NUL` after
+daemonization, so a child spawned naively from the service inherits
+that and silently drops its output. Each platform passes the caller's
+real stdin/stdout/stderr through the IPC channel into the child:
+
+| Platform | Mechanism |
+| -------- | --------- |
+| Linux/macOS | `sendmsg` with `SOL_SOCKET / SCM_RIGHTS` carrying the three fd values; service `recvmsg`s the cmsg and plumbs the fds into `std.process.spawn` as `.file` StdIo. |
+| Windows | Client ships `GetStdHandle(STD_INPUT/OUTPUT/ERROR_HANDLE)` values as a 24-byte little-endian prefix on the spawn payload. Service uses `OpenProcess(PROCESS_DUP_HANDLE, GetNamedPipeClientProcessId(pipe))` + `DuplicateHandle` 3× to pull copies into its own process, then `CreateProcessW(bInheritHandles=TRUE)` with `STARTUPINFOW.hStdInput/Output/Error`. |
+
+Result: `cr exec t -- echo hello` prints "hello" to the operator's
+terminal on every supported platform. argv[0] is resolved to an
+absolute path against the daemon's `PATH` (Linux/macOS `:` separator,
+Windows `;` with `PATHEXT` extension lookup) before the
+`Task.allowed_targets` check, and argv[0] is rewritten to the resolved
+path so the spawn cannot drift to a different binary.
+
 ### Protocol (UDS, length-framed)
 
 Frame: `[u8 version][u8 op][u32 LE payload_len][payload]`

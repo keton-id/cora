@@ -35,7 +35,11 @@ release-please automation — see the
 
 - **Zig 0.16.0** (exact). The build script and standard library rely on the
   0.16 `Io` interface and ZON tooling — earlier versions will not compile.
-- A POSIX environment (macOS or Linux). Windows is not supported yet.
+- macOS, Linux, or Windows. All three are Tier 1: every shipped feature
+  (kernel-verified caller identity, daemonization, `cr exec` stdio
+  passing, target whitelist, audit log) runs the same on each platform.
+  Tests run on whatever host you build from. See [`SECURITY.md`](SECURITY.md)
+  for the per-OS trust model.
 - Optional: `git`, `shasum`, `curl` for the install / release scripts.
 
 Install Zig via your package manager or

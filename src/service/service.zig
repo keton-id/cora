@@ -40,14 +40,15 @@ pub const default_socket_format = "/tmp/cora-{d}.sock";
 
 /// Resolve the per-user IPC endpoint string used by `cr unlock` and clients.
 ///
-/// POSIX: AF_UNIX socket path `/tmp/cora-<uid>.sock`.
-/// Windows (Tier 2): Named Pipe name `\\.\pipe\cora-<username>`.
+/// POSIX:   AF_UNIX socket path `/tmp/cora-<uid>.sock`.
+/// Windows: Named Pipe name `\\.\pipe\cora-<username>`.
 ///
-/// Returns the path bytes inside `buf`. Tier-2 Windows uses Named Pipes
+/// Returns the path bytes inside `buf`. Windows uses Named Pipes
 /// (`pipe_windows.zig`) so the kernel can report the connected client's
-/// PID via `GetNamedPipeClientProcessId`. The string is opaque to
-/// callers — `service.start` and `client.connect` interpret it
-/// per-platform.
+/// PID via `GetNamedPipeClientProcessId` — same trust surface as
+/// `SO_PEERCRED` on Linux and `LOCAL_PEERPID` on macOS. The string is
+/// opaque to callers — `service.start` and `client.connect` interpret
+/// it per-platform.
 pub fn defaultSocketPath(buf: []u8) ![]u8 {
     if (builtin.os.tag == .windows) {
         return pipe_windows.defaultPipeNameUtf8(buf);

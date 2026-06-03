@@ -3,21 +3,21 @@
 //!
 //! AF_UNIX is implemented on Windows 10+ but does not expose peer
 //! credentials. Named Pipes do — `GetNamedPipeClientProcessId` returns
-//! the kernel-verified PID of the connected client — which is what
-//! Tier 2 wants. The wire framing in `proto.zig` is unchanged; only the
-//! transport changes.
+//! the kernel-verified PID of the connected client, mirroring
+//! `SO_PEERCRED` on Linux and `LOCAL_PEERPID` on macOS. The wire
+//! framing in `proto.zig` is unchanged; only the transport changes.
 //!
 //! Pipe naming: `\\.\pipe\cora-<username>`. The trailing `<username>`
 //! segment partitions instances per Windows user so concurrent
 //! sessions on the same machine do not collide, mirroring the per-uid
 //! socket path on POSIX (`/tmp/cora-<uid>.sock`).
 //!
-//! DACL: the pipe is created with the default security descriptor.
-//! That grants access to the creating user's token (and SYSTEM/admins),
-//! same as the inherited NTFS ACL on the Tier-1 AF_UNIX socket path.
-//! What promotes us to Tier 2 is the *kernel-verified peer PID*, not
-//! the DACL — the policy gate at `service.zig` still filters by binary
-//! path the same way POSIX does after `SO_PEERCRED`.
+//! DACL: the pipe is created with the default security descriptor,
+//! which grants access to the creating user's token (and
+//! SYSTEM/admins) — same effective surface as the chmod-0600 AF_UNIX
+//! socket path on POSIX. The policy gate at `service.zig` then filters
+//! by kernel-verified caller binary path identically across all three
+//! supported platforms.
 
 const std = @import("std");
 const builtin = @import("builtin");
