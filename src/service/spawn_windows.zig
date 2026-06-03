@@ -263,6 +263,94 @@ pub fn spawnDetachedForeground(
     return .{ .pid = pi.dwProcessId };
 }
 
+/// Quote a single argv entry per the Windows command-line rules
+/// (MSDN "Parsing C++ Command-Line Arguments"). Backslashes and the
+/// quote character itself are doubled only when they precede a quote;
+/// otherwise they are passed through. Always wraps the result in
+/// double quotes so embedded whitespace stays a single token.
+fn appendQuotedArg(out: *std.ArrayList(u8), allocator: std.mem.Allocator, arg: []const u8) !void {
+    try out.append(allocator, '"');
+    var i: usize = 0;
+    while (i < arg.len) {
+        var n_back: usize = 0;
+        while (i < arg.len and arg[i] == '\\') : (i += 1) n_back += 1;
+        if (i == arg.len) {
+            // Trailing backslashes — double each so the closing quote
+            // is not consumed as an escape.
+            for (0..n_back * 2) |_| try out.append(allocator, '\\');
+        } else if (arg[i] == '"') {
+            for (0..n_back * 2 + 1) |_| try out.append(allocator, '\\');
+            try out.append(allocator, '"');
+            i += 1;
+        } else {
+            for (0..n_back) |_| try out.append(allocator, '\\');
+            try out.append(allocator, arg[i]);
+            i += 1;
+        }
+    }
+    try out.append(allocator, '"');
+}
+
+/// Build a NUL-terminated UTF-16 command line from a UTF-8 argv array,
+/// applying the Windows quoting rules so the child's CommandLineToArgvW
+/// sees the same argv tokenization. Caller owns the returned slice.
+pub fn buildCommandLineWide(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+) ![]u16 {
+    var utf8 = std.ArrayList(u8).empty;
+    defer utf8.deinit(allocator);
+    for (argv, 0..) |a, i| {
+        if (i != 0) try utf8.append(allocator, ' ');
+        try appendQuotedArg(&utf8, allocator, a);
+    }
+
+    var wide = std.ArrayList(u16).empty;
+    errdefer wide.deinit(allocator);
+    try wide.ensureTotalCapacity(allocator, utf8.items.len + 1);
+    // utf8ToUtf16Le writes exactly N u16 for N-byte ASCII input; allocate
+    // generously to cover multi-byte sequences.
+    try wide.resize(allocator, utf8.items.len * 2 + 1);
+    const n = try std.unicode.utf8ToUtf16Le(wide.items, utf8.items);
+    wide.items[n] = 0;
+    wide.shrinkRetainingCapacity(n + 1);
+    return wide.toOwnedSlice(allocator);
+}
+
+pub const EnvPair = struct { name: []const u8, value: []const u8 };
+
+/// Build a Windows-style UTF-16 environment block (`KEY=VAL\0KEY=VAL\0\0`)
+/// from a flat list of (name, value) pairs. Caller owns the returned
+/// slice and is responsible for `secureZero`-ing it once the spawn is
+/// done — the block carries secret values verbatim.
+pub fn buildEnvBlockWide(
+    allocator: std.mem.Allocator,
+    pairs: []const EnvPair,
+) ![]u16 {
+    var utf8 = std.ArrayList(u8).empty;
+    defer utf8.deinit(allocator);
+    for (pairs) |p| {
+        try utf8.appendSlice(allocator, p.name);
+        try utf8.append(allocator, '=');
+        try utf8.appendSlice(allocator, p.value);
+        try utf8.append(allocator, 0);
+    }
+    try utf8.append(allocator, 0); // double NUL terminator
+
+    var wide: []u16 = try allocator.alloc(u16, utf8.items.len);
+    errdefer allocator.free(wide);
+    const n = try std.unicode.utf8ToUtf16Le(wide, utf8.items);
+    if (n != utf8.items.len) {
+        // utf8ToUtf16Le returns the count of u16s; for our pure-ASCII
+        // env vars this matches the input length. If a value contained
+        // multi-byte UTF-8 we'd need to resize — env block expects the
+        // exact count, no trailing slop.
+        const resized = try allocator.realloc(wide, n);
+        wide = resized;
+    }
+    return wide;
+}
+
 /// Spawn a child process inheriting three already-duplicated stdio
 /// handles. The handles must live in the *current* process (the
 /// service) — typically produced by `pipe_windows.duplicateClientStdio`

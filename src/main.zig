@@ -4,7 +4,7 @@ const Io = std.Io;
 const cora = @import("cora");
 const tui_menu = @import("tui/menu.zig");
 const usage = @import("cli/usage.zig");
-const spawn_windows = @import("service/spawn_windows.zig");
+const spawn_windows = cora.spawn_windows;
 const build_options = @import("build_options");
 
 const default_path = "cora.zon";
@@ -495,16 +495,6 @@ fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void
     if (!cora.client.isRunning(io, sock_path)) {
         std.debug.print("service not running — run `cr unlock` first\n", .{});
         std.process.exit(1);
-    }
-    if (builtin.os.tag == .windows) {
-        // On Windows the Named Pipe transport cannot piggyback the
-        // caller's stdin/stdout/stderr the way POSIX SCM_RIGHTS does,
-        // so the spawned child currently inherits the daemon's NUL
-        // stdio and any output it produces is dropped. The operator
-        // sees `child pid N exit 0` with no other visible signal.
-        // Surface this once per invocation so the silence isn't a
-        // surprise; a follow-up will plumb fds via DuplicateHandle.
-        std.debug.print("warning: child stdio is dropped on windows — fd passing not yet implemented\n", .{});
     }
     const resp = cora.client.exec(allocator, io, sock_path, task_name, argv) catch |err| {
         std.debug.print("exec failed: {s}\n", .{@errorName(err)});

@@ -108,6 +108,33 @@ extern "kernel32" fn GetLastError() callconv(.winapi) DWORD;
 
 extern "advapi32" fn GetUserNameW(lpBuffer: [*]u16, pcbBuffer: LPDWORD) callconv(.winapi) BOOL;
 
+extern "kernel32" fn OpenProcess(
+    dwDesiredAccess: DWORD,
+    bInheritHandle: BOOL,
+    dwProcessId: DWORD,
+) callconv(.winapi) ?HANDLE;
+
+extern "kernel32" fn DuplicateHandle(
+    hSourceProcessHandle: HANDLE,
+    hSourceHandle: HANDLE,
+    hTargetProcessHandle: HANDLE,
+    lpTargetHandle: *HANDLE,
+    dwDesiredAccess: DWORD,
+    bInheritHandle: BOOL,
+    dwOptions: DWORD,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn GetCurrentProcess() callconv(.winapi) HANDLE;
+
+extern "kernel32" fn GetStdHandle(nStdHandle: DWORD) callconv(.winapi) HANDLE;
+
+pub const PROCESS_DUP_HANDLE: DWORD = 0x0040;
+pub const DUPLICATE_SAME_ACCESS: DWORD = 0x00000002;
+
+pub const STD_INPUT_HANDLE: DWORD = @bitCast(@as(i32, -10));
+pub const STD_OUTPUT_HANDLE: DWORD = @bitCast(@as(i32, -11));
+pub const STD_ERROR_HANDLE: DWORD = @bitCast(@as(i32, -12));
+
 pub const PipeNameMaxUtf8: usize = 256;
 pub const PipeNameMaxWide: usize = 256;
 
@@ -220,6 +247,69 @@ pub fn connectClient(name_wide_z: [*:0]const u16) !HANDLE {
 
 pub fn closeHandle(handle: HANDLE) void {
     _ = CloseHandle(handle);
+}
+
+/// Read the caller's stdin/stdout/stderr handle *values* (as they exist
+/// in the caller's process address space). These are not usable in
+/// other processes; the daemon must `DuplicateHandle` them across via
+/// `duplicateClientStdio` before plugging them into `STARTUPINFOW`.
+///
+/// Used by `cr exec` on Windows to ship the three handle values to the
+/// daemon over the named pipe so the daemon can pull copies into its
+/// own process.
+pub fn callerStdioHandles() [3]HANDLE {
+    return .{
+        GetStdHandle(STD_INPUT_HANDLE),
+        GetStdHandle(STD_OUTPUT_HANDLE),
+        GetStdHandle(STD_ERROR_HANDLE),
+    };
+}
+
+/// Duplicate three handle values that live in the client process
+/// (identified by `client_pid`, typically obtained via
+/// `clientProcessId`) into the *current* process via
+/// `OpenProcess(PROCESS_DUP_HANDLE) + DuplicateHandle`. The returned
+/// handles are owned by the current process and must be closed by the
+/// caller via `closeStdioDups` once the spawned child has been started
+/// (the kernel duplicates them into the child as part of
+/// `CreateProcessW(bInheritHandles=TRUE)`, so we drop our copies right
+/// after).
+///
+/// On any failure all partially-duplicated handles are closed before
+/// returning the error, leaving no handles leaked in the daemon.
+pub fn duplicateClientStdio(client_pid: u32, src: [3]HANDLE) ![3]HANDLE {
+    const client_proc = OpenProcess(PROCESS_DUP_HANDLE, 0, client_pid) orelse
+        return error.OpenClientProcessFailed;
+    defer _ = CloseHandle(client_proc);
+
+    const self_proc = GetCurrentProcess();
+    var dup: [3]HANDLE = .{ INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
+    var i: usize = 0;
+    while (i < 3) : (i += 1) {
+        const ok = DuplicateHandle(
+            client_proc,
+            src[i],
+            self_proc,
+            &dup[i],
+            0, // dwDesiredAccess ignored when DUPLICATE_SAME_ACCESS is set
+            1, // bInheritHandle — child must inherit
+            DUPLICATE_SAME_ACCESS,
+        );
+        if (ok == 0) {
+            // Roll back any handles duplicated so far so the daemon
+            // does not leak references on partial failure.
+            var j: usize = 0;
+            while (j < i) : (j += 1) _ = CloseHandle(dup[j]);
+            return error.DuplicateHandleFailed;
+        }
+    }
+    return dup;
+}
+
+/// Close the three daemon-side stdio duplicates produced by
+/// `duplicateClientStdio` once the child has been spawned.
+pub fn closeStdioDups(dups: [3]HANDLE) void {
+    for (dups) |h| _ = CloseHandle(h);
 }
 
 test "defaultPipeNameUtf8 prefixes pipe namespace (Windows-only)" {
