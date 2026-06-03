@@ -361,7 +361,7 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
 
     const audit_path = try cora.audit.defaultPathAlloc(allocator);
     var audit_logger = try cora.audit.Logger.init(allocator, io, audit_path, true);
-    defer audit_logger.deinit();
+    errdefer audit_logger.deinit();
 
     var svc = try cora.service.Service.start(allocator, io, .{
         .socket_path = sock_path,
@@ -369,10 +369,32 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
         .policy = pol,
         .audit_logger = &audit_logger,
     }, &secrets);
-    defer svc.deinit();
+    errdefer svc.deinit();
     if (foreground) usage.outPrint(io, "listening at {s} (foreground)\n", .{sock_path});
     try svc.run();
     usage.outPrint(io, "service exited\n", .{});
+
+    // Emit service_locked, zero secrets, close server socket, delete the
+    // socket file. Done here (instead of via `defer`) so the daemon path
+    // below can force-exit without leaving the audit event or the socket
+    // file behind.
+    svc.deinit();
+    audit_logger.deinit();
+
+    if (!foreground) {
+        // After fork+setsid the child inherited a `std.Io` context that
+        // the parent set up before the fork. Returning normally through
+        // `main` joins the inherited worker threads — which only exist
+        // in the parent. In the child those joins block forever on
+        // `futex_do_wait`, leaving the daemon process running long
+        // after `cr lock` has reported success. The visible symptom is
+        // that every subsequent `cr unlock` spawns a new daemon while
+        // the old ones accumulate. Force-exit instead. All cleanup
+        // that affects on-disk or cross-process state has already run
+        // above; the remaining defers (in-memory frees, pass_buf zero)
+        // are dropped on exit and reclaimed by the kernel.
+        std.process.exit(0);
+    }
 }
 
 fn cmdAudit(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void {
@@ -861,12 +883,14 @@ fn stdinReadByte(out: *[1]u8) !usize {
     }
 }
 
-// Windows console-mode bindings. Stripping ENABLE_ECHO_INPUT is the documented
-// way to suppress terminal echo on Win32 consoles. ENABLE_LINE_INPUT is left
-// alone so the kernel keeps buffering until newline.
+// Windows console-mode bindings. Stripping ENABLE_ECHO_INPUT suppresses
+// terminal echo. ENABLE_LINE_INPUT is also stripped now so the kernel
+// delivers each byte as it is typed — we render a `*` per byte ourselves
+// in readLineBytes for visual feedback.
 extern "kernel32" fn GetConsoleMode(hConsoleHandle: *anyopaque, lpMode: *u32) callconv(.winapi) i32;
 extern "kernel32" fn SetConsoleMode(hConsoleHandle: *anyopaque, dwMode: u32) callconv(.winapi) i32;
 const ENABLE_ECHO_INPUT: u32 = 0x0004;
+const ENABLE_LINE_INPUT: u32 = 0x0002;
 
 /// Read a secret line (passphrase or secret value) from stdin with terminal
 /// echo suppressed. On non-TTY stdin (test pipes, redirected scripts) the
@@ -882,7 +906,7 @@ fn readSecret(prompt: []const u8, buf: []u8) ![]const u8 {
         var saved_mode: u32 = 0;
         const is_console = GetConsoleMode(h, &saved_mode) != 0;
         if (is_console) {
-            const masked_mode = saved_mode & ~ENABLE_ECHO_INPUT;
+            const masked_mode = saved_mode & ~ENABLE_ECHO_INPUT & ~ENABLE_LINE_INPUT;
             if (SetConsoleMode(h, masked_mode) == 0) {
                 // Fail closed: refuse to read rather than echo to the terminal.
                 return error.ConsoleMaskingFailed;
@@ -891,41 +915,60 @@ fn readSecret(prompt: []const u8, buf: []u8) ![]const u8 {
                 _ = SetConsoleMode(h, saved_mode);
                 std.debug.print("\n", .{});
             }
-            return readLineBytes(buf);
+            return readLineBytes(buf, true);
         }
         // stdin is a pipe or redirected file — nothing to mask.
-        return readLineBytes(buf);
+        return readLineBytes(buf, false);
     }
 
-    // POSIX: disable terminal echo around the read, restore on exit.
-    // The block also brackets the byte loop so masking persists while
-    // we collect input.
+    // POSIX: disable terminal echo AND line buffering around the read, so we
+    // can echo a `*` per byte ourselves. Restore on exit.
     var saved: ?std.posix.termios = null;
+    var is_tty = false;
     defer {
         if (saved) |s| std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, s) catch {};
         if (saved != null) std.debug.print("\n", .{});
     }
     if (std.posix.tcgetattr(std.posix.STDIN_FILENO)) |orig| {
         saved = orig;
+        is_tty = true;
         var t = orig;
         t.lflag.ECHO = false;
+        t.lflag.ICANON = false;
+        t.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+        t.cc[@intFromEnum(std.posix.V.TIME)] = 0;
         std.posix.tcsetattr(std.posix.STDIN_FILENO, .FLUSH, t) catch {};
     } else |_| {
         // stdin is not a TTY (pipe or redirect); leave terminal alone.
     }
-    return readLineBytes(buf);
+    return readLineBytes(buf, is_tty);
 }
 
-fn readLineBytes(buf: []u8) ![]const u8 {
+/// Collect a line into `buf` one byte at a time. When `echo_stars` is true
+/// the stream is an interactive TTY with canonical mode and echo disabled,
+/// so we render a `*` per accepted byte and `\b \b` per backspace. When
+/// it's false (pipe / redirected stdin) we stay silent — pipes don't echo
+/// anyway, and emitting stars would corrupt downstream parsers.
+fn readLineBytes(buf: []u8, echo_stars: bool) ![]const u8 {
     var len: usize = 0;
     while (len < buf.len) {
         var one: [1]u8 = undefined;
         const n = try stdinReadByte(&one);
         if (n == 0) break;
-        if (one[0] == '\n') break;
-        if (one[0] == '\r') continue;
-        buf[len] = one[0];
+        const c = one[0];
+        if (c == '\n' or c == '\r') break;
+        if (c == 0x7f or c == 0x08) {
+            // DEL or BS: erase last char if any.
+            if (len > 0) {
+                len -= 1;
+                if (echo_stars) std.debug.print("\x08 \x08", .{});
+            }
+            continue;
+        }
+        if (c < 0x20) continue; // ignore other control bytes (Ctrl-U, etc.)
+        buf[len] = c;
         len += 1;
+        if (echo_stars) std.debug.print("*", .{});
     }
     return buf[0..len];
 }

@@ -314,6 +314,16 @@ pub const Service = struct {
                     try proto.writeFrame(&writer.interface, .lock, "");
                     try writer.interface.flush();
                     self.shutdown.store(true, .release);
+                    // Cancel the accept loop so the daemon exits promptly
+                    // instead of staying blocked on the next iteration.
+                    // Without this, `cr lock` returned exit 0 but the
+                    // daemon process kept running — the next `cr unlock`
+                    // would then spawn a second daemon, accumulating
+                    // indefinitely. `Server.cancel` is platform-aware
+                    // (closes the AF_UNIX socket on POSIX, closes the
+                    // pipe handle on Windows) and is the same wakeup the
+                    // idle watcher already uses on timeout.
+                    self.server.cancel(self.io);
                     return;
                 },
                 .task_declare => {
