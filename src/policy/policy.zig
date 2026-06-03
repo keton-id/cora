@@ -6,6 +6,18 @@ pub const default_idle_timeout_ms: i64 = 15 * 60 * 1000;
 pub const Task = struct {
     name: []const u8,
     allowed_secrets: []const []const u8 = &.{},
+    /// Whitelist of absolute paths that may be the spawn target (argv[0])
+    /// for this task. Empty list = dev-mode allow-all (preserves backward
+    /// compatibility with tasks defined before this field existed).
+    ///
+    /// Without this gate a trusted caller can still leak a secret value by
+    /// asking the service to spawn `/bin/echo $TOKEN` or
+    /// `/bin/cat /proc/self/environ` — the secret reaches the child env,
+    /// the child happily prints it to the caller-attached stdout. The
+    /// caller policy alone does not stop this because the caller is
+    /// supposed to be trusted; the missing layer is "what is the trusted
+    /// caller allowed to run."
+    allowed_targets: []const []const u8 = &.{},
 };
 
 pub const Policy = struct {
@@ -32,6 +44,18 @@ pub const Policy = struct {
 pub fn isSecretAllowedForTask(task: *const Task, secret: []const u8) bool {
     for (task.allowed_secrets) |s| {
         if (std.mem.eql(u8, s, secret)) return true;
+    }
+    return false;
+}
+
+/// Return true if `target_path` (an absolute resolved binary path) is
+/// allowed as the spawn target for `task`. Empty `allowed_targets` =
+/// dev-mode allow-all so pre-existing tasks defined without the field
+/// keep working.
+pub fn isTargetAllowedForTask(task: *const Task, target_path: []const u8) bool {
+    if (task.allowed_targets.len == 0) return true;
+    for (task.allowed_targets) |t| {
+        if (std.mem.eql(u8, t, target_path)) return true;
     }
     return false;
 }
@@ -121,6 +145,48 @@ test "allow/deny mutation preserves tasks" {
     try std.testing.expectEqual(@as(usize, 1), back.tasks[0].allowed_secrets.len);
     try std.testing.expectEqualStrings("API_KEY", back.tasks[0].allowed_secrets[0]);
     try std.testing.expectEqual(@as(usize, 2), back.allowed_callers.len);
+}
+
+test "isTargetAllowedForTask: empty list is dev-mode allow-all" {
+    const t = Task{ .name = "x", .allowed_secrets = &.{}, .allowed_targets = &.{} };
+    try std.testing.expect(isTargetAllowedForTask(&t, "/anything"));
+    try std.testing.expect(isTargetAllowedForTask(&t, "/usr/bin/gh"));
+}
+
+test "isTargetAllowedForTask: non-empty whitelist enforces exact match" {
+    const t = Task{
+        .name = "github",
+        .allowed_secrets = &.{"GH_TOKEN"},
+        .allowed_targets = &.{ "/usr/bin/gh", "/usr/bin/git" },
+    };
+    try std.testing.expect(isTargetAllowedForTask(&t, "/usr/bin/gh"));
+    try std.testing.expect(isTargetAllowedForTask(&t, "/usr/bin/git"));
+    try std.testing.expect(!isTargetAllowedForTask(&t, "/bin/echo"));
+    try std.testing.expect(!isTargetAllowedForTask(&t, "/bin/cat"));
+    // No prefix match — must be exact path.
+    try std.testing.expect(!isTargetAllowedForTask(&t, "/usr/bin/gh-extension"));
+}
+
+test "serialize/parse roundtrip preserves allowed_targets" {
+    const allocator = std.testing.allocator;
+    const original = Policy{
+        .tasks = &.{
+            .{
+                .name = "github",
+                .allowed_secrets = &.{"GH_TOKEN"},
+                .allowed_targets = &.{ "/usr/bin/gh", "/usr/bin/git" },
+            },
+        },
+    };
+    const text = try serialize(allocator, original);
+    defer allocator.free(text);
+
+    var back = try parse(allocator, text);
+    defer free(allocator, &back);
+    try std.testing.expectEqual(@as(usize, 1), back.tasks.len);
+    try std.testing.expectEqual(@as(usize, 2), back.tasks[0].allowed_targets.len);
+    try std.testing.expectEqualStrings("/usr/bin/gh", back.tasks[0].allowed_targets[0]);
+    try std.testing.expectEqualStrings("/usr/bin/git", back.tasks[0].allowed_targets[1]);
 }
 
 test "serialize/parse roundtrip" {

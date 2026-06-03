@@ -444,20 +444,71 @@ pub const Service = struct {
             return;
         }
 
-        self.handleSpawn(&writer.interface, task_name_buf[0..task_name_len], spawn_frame.payload, stdio_fds) catch |err| {
+        self.handleSpawn(&writer.interface, &ident, task_name_buf[0..task_name_len], spawn_frame.payload, stdio_fds) catch |err| {
             std.log.warn("spawn failed: {s}", .{@errorName(err)});
             proto.writeFrame(&writer.interface, .err, @errorName(err)) catch {};
             writer.interface.flush() catch {};
         };
     }
 
-    fn handleSpawn(self: *Service, writer: *Io.Writer, declared_task: []const u8, payload: []const u8, stdio_fds: ?[3]std.posix.fd_t) !void {
+    fn handleSpawn(
+        self: *Service,
+        writer: *Io.Writer,
+        ident: *const identity.CallerIdentity,
+        declared_task: []const u8,
+        payload: []const u8,
+        stdio_fds: ?[3]std.posix.fd_t,
+    ) !void {
         var parsed = try proto.decodeSpawnPayload(self.allocator, payload);
         defer parsed.deinit();
 
         if (!std.mem.eql(u8, parsed.task_name, declared_task)) return CoraError.NoActiveTask;
         const task = self.policy.findTask(declared_task) orelse return CoraError.NoActiveTask;
         if (parsed.argv.len == 0) return CoraError.InvalidConfig;
+
+        // Resolve argv[0] to an absolute path and gate it against the
+        // task's allowed_targets. Without this gate a trusted caller can
+        // still leak a secret value by asking the service to spawn
+        // /bin/echo $TOKEN or /bin/cat /proc/self/environ — the caller
+        // policy doesn't stop that because the caller IS supposed to be
+        // trusted; the missing layer is "what is the trusted caller
+        // allowed to run." See policy.isTargetAllowedForTask. The
+        // resolution is also useful in dev-mode (no targets configured):
+        // it normalizes argv[0] so the audit log records the resolved
+        // path, not a relative name.
+        var resolved_buf: [identity.max_path_len]u8 = undefined;
+        const resolved = resolveTargetPath(parsed.argv[0], &resolved_buf) catch {
+            self.emit(.{ .target_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .caller_pid = ident.pid,
+                .caller_bin = ident.path(),
+                .task = declared_task,
+                .target = parsed.argv[0],
+                .reason = "binary not found in daemon PATH",
+            } });
+            try proto.writeFrame(writer, .err, "target not found");
+            try writer.flush();
+            return CoraError.TargetNotFound;
+        };
+
+        if (!policy_mod.isTargetAllowedForTask(task, resolved)) {
+            self.emit(.{ .target_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .caller_pid = ident.pid,
+                .caller_bin = ident.path(),
+                .task = declared_task,
+                .target = resolved,
+                .reason = "target not in allowed_targets",
+            } });
+            try proto.writeFrame(writer, .err, "target not allowed");
+            try writer.flush();
+            return CoraError.TargetNotAllowed;
+        }
+
+        // Rewrite argv[0] in place with the resolved absolute path so the
+        // child sees a deterministic argv and the spawn never falls back
+        // to its own PATH search (which might pick a different binary).
+        parsed.argv[0] = resolved;
 
         var env_map = std.process.Environ.Map.init(self.allocator);
         defer env_map.deinit();
@@ -644,6 +695,58 @@ fn recvFrameWithStdioFds(
     return .{ .op = op, .payload = buf };
 }
 
+/// Resolve `target` to an absolute path. Absolute inputs pass through
+/// verbatim. Relative inputs are searched against the daemon's `PATH`
+/// (inherited from the shell that ran `cr unlock`) and the first match
+/// that is executable for the daemon UID wins. Returns the resolved
+/// path stored in `out_buf`. Errors if the target cannot be found.
+///
+/// We do this server-side (rather than letting `std.process.spawn`
+/// resolve later) for two reasons:
+/// 1. The allowed_targets check needs the absolute path to compare.
+/// 2. After resolution we replace argv[0] with the absolute path so the
+///    actual spawn cannot drift into a different `PATH` and end up
+///    invoking a different binary than the one we audited / approved.
+fn resolveTargetPath(target: []const u8, out_buf: []u8) ![]const u8 {
+    if (target.len == 0) return error.TargetNotFound;
+
+    if (target[0] == '/' or (target.len >= 2 and target[0] == '.' and target[1] == '/') or
+        (target.len >= 3 and target[0] == '.' and target[1] == '.' and target[2] == '/'))
+    {
+        // Absolute or explicit relative: trust as-is, but it must
+        // actually exist and be executable.
+        if (target.len > out_buf.len) return error.TargetNotFound;
+        @memcpy(out_buf[0..target.len], target);
+        if (!isExecutable(out_buf[0..target.len])) return error.TargetNotFound;
+        return out_buf[0..target.len];
+    }
+
+    // Search daemon PATH.
+    const path_env_ptr = std.c.getenv("PATH") orelse return error.TargetNotFound;
+    const path_env = std.mem.span(path_env_ptr);
+
+    var it = std.mem.tokenizeScalar(u8, path_env, ':');
+    while (it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const need_sep: usize = if (dir[dir.len - 1] == '/') 0 else 1;
+        const total = dir.len + need_sep + target.len;
+        if (total > out_buf.len) continue;
+        @memcpy(out_buf[0..dir.len], dir);
+        if (need_sep == 1) out_buf[dir.len] = '/';
+        @memcpy(out_buf[dir.len + need_sep ..][0..target.len], target);
+        const candidate = out_buf[0..total];
+        if (isExecutable(candidate)) return candidate;
+    }
+    return error.TargetNotFound;
+}
+
+fn isExecutable(path: []const u8) bool {
+    const path_z = std.posix.toPosixPath(path) catch return false;
+    // X_OK = 0x01 on POSIX. std.posix.access is not in 0.16 in a
+    // cross-portable shape, so use libc directly. Returns 0 on success.
+    return std.c.access(&path_z, 0x01) == 0;
+}
+
 /// Render the same human-readable policy summary that `cr policy show`
 /// emits when invoked against an offline vault. Used by the in-memory
 /// `policy_show` service op so the on-the-wire response matches the
@@ -655,9 +758,16 @@ pub fn renderPolicy(w: *Io.Writer, pol: *const policy_mod.Policy) !void {
     for (pol.allowed_callers) |c| try w.print("  {s}\n", .{c});
     try w.print("tasks ({d}):\n", .{pol.tasks.len});
     for (pol.tasks) |t| {
-        try w.print("  {s}: ", .{t.name});
-        for (t.allowed_secrets) |s| try w.print("{s} ", .{s});
+        try w.print("  {s}:\n", .{t.name});
+        try w.print("    secrets ({d}):", .{t.allowed_secrets.len});
+        for (t.allowed_secrets) |s| try w.print(" {s}", .{s});
         try w.print("\n", .{});
+        if (t.allowed_targets.len == 0) {
+            try w.print("    targets: (any — dev mode)\n", .{});
+        } else {
+            try w.print("    targets ({d}):\n", .{t.allowed_targets.len});
+            for (t.allowed_targets) |tgt| try w.print("      {s}\n", .{tgt});
+        }
     }
 }
 

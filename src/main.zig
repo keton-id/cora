@@ -717,12 +717,43 @@ fn cmdPolicyTask(
     var next: std.ArrayList(cora.policy.Task) = .empty;
     defer next.deinit(allocator);
 
+    // Lifted to function scope so the slices stay alive across
+    // `cora.policy.serialize`, which reads through `next.items` to
+    // borrowed slices in these lists.
+    var targets: std.ArrayList([]const u8) = .empty;
+    defer targets.deinit(allocator);
+    var secrets_list: std.ArrayList([]const u8) = .empty;
+    defer secrets_list.deinit(allocator);
+
     if (std.mem.eql(u8, sub, "add")) {
-        const secrets = args[5..];
+        // Split args[5..] into `--target PATH` flag pairs and positional
+        // secret names. `--target` is repeatable; everything that is not
+        // a flag/flag-value is treated as a secret name. Order between
+        // flags and secrets does not matter, but `--target` must be
+        // immediately followed by a path (a missing value is rejected).
+        var i: usize = 5;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--target")) {
+                if (i + 1 >= args.len) {
+                    std.debug.print("--target requires a path argument\n", .{});
+                    usage.printPolicyTaskAdd(io, .stderr);
+                    std.process.exit(1);
+                }
+                try targets.append(allocator, args[i + 1]);
+                i += 1;
+                continue;
+            }
+            try secrets_list.append(allocator, args[i]);
+        }
+
         for (pol.tasks) |t| {
             if (!std.mem.eql(u8, t.name, name)) try next.append(allocator, t);
         }
-        try next.append(allocator, .{ .name = name, .allowed_secrets = secrets });
+        try next.append(allocator, .{
+            .name = name,
+            .allowed_secrets = secrets_list.items,
+            .allowed_targets = targets.items,
+        });
     } else { // "remove" — validated by caller
         for (pol.tasks) |t| {
             if (!std.mem.eql(u8, t.name, name)) try next.append(allocator, t);
