@@ -348,18 +348,23 @@ pub const Service = struct {
                     } });
                     try proto.writeFrame(&writer.interface, .task_declare, "");
                     try writer.interface.flush();
+                    // Drop out of the buffered-read loop. The next frame is
+                    // the spawn message and the POSIX client attaches its
+                    // stdio fds to it via SCM_RIGHTS — we have to use raw
+                    // recvmsg to receive those fds, and that has to happen
+                    // on a clean socket with no pre-buffered bytes ahead of
+                    // it. The synchronous task_declare ack guarantees the
+                    // client has not yet sent the spawn frame, so the
+                    // socket buffer is empty when we exit the loop.
+                    break;
                 },
                 .spawn => {
-                    if (task_name_len == 0) {
-                        try proto.writeFrame(&writer.interface, .err, "no task declared");
-                        try writer.interface.flush();
-                        continue;
-                    }
-                    self.handleSpawn(&writer.interface, task_name_buf[0..task_name_len], frame.payload) catch |err| {
-                        std.log.warn("spawn failed: {s}", .{@errorName(err)});
-                        try proto.writeFrame(&writer.interface, .err, @errorName(err));
-                        try writer.interface.flush();
-                    };
+                    // Protocol violation: spawn without prior task_declare.
+                    // (Normal clients break out of the loop on task_declare
+                    // and never re-enter this arm.)
+                    try proto.writeFrame(&writer.interface, .err, "no task declared");
+                    try writer.interface.flush();
+                    return;
                 },
                 .secrets_list => {
                     const names = self.secrets.names(self.allocator) catch |err| {
@@ -394,9 +399,59 @@ pub const Service = struct {
                 },
             }
         }
+
+        // Reached here only via the `.task_declare` break above. Now read
+        // the spawn frame and (on POSIX) the SCM_RIGHTS-attached stdio fds.
+        if (task_name_len == 0) return;
+
+        var stdio_fds: ?[3]std.posix.fd_t = null;
+        defer {
+            if (stdio_fds) |fds| {
+                for (fds) |fd| _ = std.c.close(fd);
+            }
+        }
+
+        var spawn_frame = blk: {
+            if (builtin.os.tag == .windows) {
+                // Windows transport (Named Pipes) cannot piggyback fds the
+                // way SCM_RIGHTS does on POSIX. Read the spawn frame via
+                // the existing buffered reader. The child will inherit the
+                // daemon's /dev/null stdio — `cmdExec` emits a stderr
+                // warning before connecting so the operator knows output
+                // is going to be lost on this platform.
+                break :blk proto.readFrame(&reader.interface, self.allocator) catch return;
+            }
+            break :blk recvFrameWithStdioFds(stream.idHandle(), self.allocator, &stdio_fds) catch return;
+        };
+        defer spawn_frame.deinit(self.allocator);
+
+        if (requiresCallerPolicy(.spawn) and !self.policy.isCallerAllowed(ident.path())) {
+            _ = self.rejected.fetchAdd(1, .monotonic);
+            self.emit(.{ .caller_rejected = .{
+                .ts_ms = nowMs(self.io),
+                .pid = ident.pid,
+                .binary = ident.path(),
+                .reason = "binary not in allowed_callers",
+            } });
+            try proto.writeFrame(&writer.interface, .err, "caller not allowed");
+            try writer.interface.flush();
+            return;
+        }
+
+        if (spawn_frame.op != @intFromEnum(proto.Op.spawn)) {
+            try proto.writeFrame(&writer.interface, .err, "expected spawn");
+            try writer.interface.flush();
+            return;
+        }
+
+        self.handleSpawn(&writer.interface, task_name_buf[0..task_name_len], spawn_frame.payload, stdio_fds) catch |err| {
+            std.log.warn("spawn failed: {s}", .{@errorName(err)});
+            proto.writeFrame(&writer.interface, .err, @errorName(err)) catch {};
+            writer.interface.flush() catch {};
+        };
     }
 
-    fn handleSpawn(self: *Service, writer: *Io.Writer, declared_task: []const u8, payload: []const u8) !void {
+    fn handleSpawn(self: *Service, writer: *Io.Writer, declared_task: []const u8, payload: []const u8, stdio_fds: ?[3]std.posix.fd_t) !void {
         var parsed = try proto.decodeSpawnPayload(self.allocator, payload);
         defer parsed.deinit();
 
@@ -430,10 +485,24 @@ pub const Service = struct {
         }
 
         const start_ms = nowMs(self.io);
-        var child = try std.process.spawn(self.io, .{
+
+        // Hand the caller's terminal to the child when the client sent
+        // stdio fds via SCM_RIGHTS. Without them the child inherits the
+        // daemon's `/dev/null` stdio (set up by fork+setsid in cmdUnlock),
+        // which silently swallows stdout — see the related fix in cmdExec
+        // that emits a warning on platforms where fd passing is not yet
+        // supported.
+        var spawn_opts: std.process.SpawnOptions = .{
             .argv = parsed.argv,
             .environ_map = &env_map,
-        });
+        };
+        if (stdio_fds) |fds| {
+            spawn_opts.stdin = .{ .file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } } };
+            spawn_opts.stdout = .{ .file = .{ .handle = fds[1], .flags = .{ .nonblocking = false } } };
+            spawn_opts.stderr = .{ .file = .{ .handle = fds[2], .flags = .{ .nonblocking = false } } };
+        }
+
+        var child = try std.process.spawn(self.io, spawn_opts);
         const child_pid: i32 = childPid(child);
 
         for (injected_names.items) |name| {
@@ -507,6 +576,72 @@ pub fn requiresCallerPolicy(op: proto.Op) bool {
         .task_declare, .spawn => true,
         else => false,
     };
+}
+
+/// POSIX-only. Read the spawn frame from `fd` via `recvmsg`, capturing
+/// any SCM_RIGHTS control message the client attached (three stdio fds
+/// for the child process). Returns the parsed frame; the captured fds
+/// land in `fds_out` for the caller to dup into the child and then
+/// close. Falls back to leaving `fds_out` as `null` if the client did
+/// not attach a cmsg, in which case the child inherits the daemon's
+/// stdio (which is `/dev/null` on the standard fork+setsid path).
+fn recvFrameWithStdioFds(
+    fd: std.posix.fd_t,
+    allocator: std.mem.Allocator,
+    fds_out: *?[3]std.posix.fd_t,
+) !proto.Frame {
+    if (builtin.os.tag == .windows) unreachable;
+
+    var hdr: [6]u8 = undefined;
+    var hdr_got: usize = 0;
+
+    while (hdr_got < hdr.len) {
+        var iov = [_]std.posix.iovec{
+            .{ .base = @ptrCast(&hdr[hdr_got]), .len = hdr.len - hdr_got },
+        };
+        var cmsg_buf: [@sizeOf(std.c.cmsghdr) + @sizeOf([3]std.posix.fd_t)]u8 align(@alignOf(std.c.cmsghdr)) = undefined;
+        var msg: std.c.msghdr = .{
+            .name = null,
+            .namelen = 0,
+            .iov = &iov,
+            .iovlen = 1,
+            .control = @ptrCast(&cmsg_buf),
+            .controllen = @intCast(cmsg_buf.len),
+            .flags = 0,
+        };
+        const n = std.c.recvmsg(fd, &msg, 0);
+        if (n <= 0) return CoraError.Io;
+        hdr_got += @intCast(n);
+
+        // Ancillary data is delivered with the first recvmsg covering a
+        // given sendmsg. Capture once; later recvs for the rest of the
+        // header (rare for our small frames) won't carry cmsg again.
+        if (fds_out.* == null and msg.controllen >= @sizeOf(std.c.cmsghdr)) {
+            const cmsg: *const std.c.cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
+            if (cmsg.level == std.posix.SOL.SOCKET and cmsg.type == std.posix.SCM.RIGHTS) {
+                var fds: [3]std.posix.fd_t = undefined;
+                @memcpy(std.mem.asBytes(&fds), cmsg_buf[@sizeOf(std.c.cmsghdr)..][0..@sizeOf(@TypeOf(fds))]);
+                fds_out.* = fds;
+            }
+        }
+    }
+
+    if (hdr[0] != proto.protocol_version) return CoraError.UnsupportedVersion;
+    const op = hdr[1];
+    const len = std.mem.readInt(u32, hdr[2..6], .little);
+    if (len > proto.max_payload_len) return CoraError.Io;
+
+    const buf = try allocator.alloc(u8, len);
+    errdefer allocator.free(buf);
+
+    var payload_got: usize = 0;
+    while (payload_got < len) {
+        const n = std.c.recv(fd, @ptrCast(&buf[payload_got]), len - payload_got, 0);
+        if (n <= 0) return CoraError.Io;
+        payload_got += @intCast(n);
+    }
+
+    return .{ .op = op, .payload = buf };
 }
 
 /// Render the same human-readable policy summary that `cr policy show`
