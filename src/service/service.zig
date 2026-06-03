@@ -314,6 +314,16 @@ pub const Service = struct {
                     try proto.writeFrame(&writer.interface, .lock, "");
                     try writer.interface.flush();
                     self.shutdown.store(true, .release);
+                    // Cancel the accept loop so the daemon exits promptly
+                    // instead of staying blocked on the next iteration.
+                    // Without this, `cr lock` returned exit 0 but the
+                    // daemon process kept running — the next `cr unlock`
+                    // would then spawn a second daemon, accumulating
+                    // indefinitely. `Server.cancel` is platform-aware
+                    // (closes the AF_UNIX socket on POSIX, closes the
+                    // pipe handle on Windows) and is the same wakeup the
+                    // idle watcher already uses on timeout.
+                    self.server.cancel(self.io);
                     return;
                 },
                 .task_declare => {
@@ -350,6 +360,33 @@ pub const Service = struct {
                         try proto.writeFrame(&writer.interface, .err, @errorName(err));
                         try writer.interface.flush();
                     };
+                },
+                .secrets_list => {
+                    const names = self.secrets.names(self.allocator) catch |err| {
+                        try proto.writeFrame(&writer.interface, .err, @errorName(err));
+                        try writer.interface.flush();
+                        continue;
+                    };
+                    defer self.allocator.free(names);
+                    const payload = proto.encodeNameList(self.allocator, names) catch |err| {
+                        try proto.writeFrame(&writer.interface, .err, @errorName(err));
+                        try writer.interface.flush();
+                        continue;
+                    };
+                    defer self.allocator.free(payload);
+                    try proto.writeFrame(&writer.interface, .secrets_list, payload);
+                    try writer.interface.flush();
+                },
+                .policy_show => {
+                    var aw: std.Io.Writer.Allocating = .init(self.allocator);
+                    defer aw.deinit();
+                    renderPolicy(&aw.writer, &self.policy) catch |err| {
+                        try proto.writeFrame(&writer.interface, .err, @errorName(err));
+                        try writer.interface.flush();
+                        continue;
+                    };
+                    try proto.writeFrame(&writer.interface, .policy_show, aw.written());
+                    try writer.interface.flush();
                 },
                 else => {
                     try proto.writeFrame(&writer.interface, .err, "unknown op");
@@ -470,6 +507,23 @@ pub fn requiresCallerPolicy(op: proto.Op) bool {
         .task_declare, .spawn => true,
         else => false,
     };
+}
+
+/// Render the same human-readable policy summary that `cr policy show`
+/// emits when invoked against an offline vault. Used by the in-memory
+/// `policy_show` service op so the on-the-wire response matches the
+/// offline fallback verbatim — the CLI writes the response straight to
+/// stdout without reformatting.
+pub fn renderPolicy(w: *Io.Writer, pol: *const policy_mod.Policy) !void {
+    try w.print("idle_timeout_ms: {d}\n", .{pol.idle_timeout_ms});
+    try w.print("allowed_callers ({d}):\n", .{pol.allowed_callers.len});
+    for (pol.allowed_callers) |c| try w.print("  {s}\n", .{c});
+    try w.print("tasks ({d}):\n", .{pol.tasks.len});
+    for (pol.tasks) |t| {
+        try w.print("  {s}: ", .{t.name});
+        for (t.allowed_secrets) |s| try w.print("{s} ", .{s});
+        try w.print("\n", .{});
+    }
 }
 
 /// Force the bound AF_UNIX socket to mode 0600. No-op on Windows where

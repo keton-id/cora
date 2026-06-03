@@ -110,6 +110,44 @@ pub fn status(allocator: std.mem.Allocator, io: Io, socket_path: []const u8) !pr
     return proto.StatusResp.decode(f.payload);
 }
 
+/// Fetch the list of secret NAMES held by the running service. Returns
+/// owned copies — caller must free each element and the outer slice. The
+/// service exposes names (no values) via an unauthenticated op so that
+/// `cr secrets list` can skip the passphrase prompt while the vault is
+/// already unlocked.
+pub fn secretsList(allocator: std.mem.Allocator, io: Io, socket_path: []const u8) ![][]const u8 {
+    var conn = try connect(allocator, io, socket_path);
+    defer conn.deinit();
+    var f = try conn.roundtrip(.secrets_list, "");
+    defer f.deinit(allocator);
+    if (f.op != @intFromEnum(proto.Op.secrets_list)) return CoraError.Io;
+
+    var iter = try proto.decodeNameList(f.payload);
+    var out: std.ArrayListUnmanaged([]const u8) = .empty;
+    errdefer {
+        for (out.items) |n| allocator.free(n);
+        out.deinit(allocator);
+    }
+    while (iter.next()) |name| {
+        const copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(copy);
+        try out.append(allocator, copy);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Fetch the human-readable policy summary from the running service.
+/// Returns an owned text buffer ready to write to stdout verbatim — the
+/// service formats it identically to the offline `cr policy show` path.
+pub fn policyShow(allocator: std.mem.Allocator, io: Io, socket_path: []const u8) ![]u8 {
+    var conn = try connect(allocator, io, socket_path);
+    defer conn.deinit();
+    var f = try conn.roundtrip(.policy_show, "");
+    defer f.deinit(allocator);
+    if (f.op != @intFromEnum(proto.Op.policy_show)) return CoraError.Io;
+    return allocator.dupe(u8, f.payload);
+}
+
 pub fn lock(allocator: std.mem.Allocator, io: Io, socket_path: []const u8) !void {
     var conn = try connect(allocator, io, socket_path);
     defer conn.deinit();
