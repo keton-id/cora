@@ -8,6 +8,36 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.9.0-alpha.1](https://github.com/keton-id/cora/compare/v0.8.1-alpha.1...v0.9.0-alpha.1) (2026-06-04)
+
+
+### Features
+
+* **policy:** allowed_targets per task to block secret-leak spawn targets ([0ab8182](https://github.com/keton-id/cora/commit/0ab81827007c75ee8a6c2aafd8e264a17712b147))
+* **service,cli,policy:** cr exec stdio + target whitelist on Windows ([d13310b](https://github.com/keton-id/cora/commit/d13310b19da6474a66acf6e610423507551df71e))
+* **windows:** cr exec stdio parity via DuplicateHandle + PATH/PATHEXT target resolve ([5a085cd](https://github.com/keton-id/cora/commit/5a085cde53b13533147e6403b982a7699eb3704f))
+
+
+### Bug Fixes
+
+* **audit:** fall back to USERPROFILE on Windows when HOME is unset ([a9e7640](https://github.com/keton-id/cora/commit/a9e76404a378d0f53da09312b829fd46a4cf2b0e))
+* land PR [#37](https://github.com/keton-id/cora/issues/37) and [#40](https://github.com/keton-id/cora/issues/40) on main ([0487126](https://github.com/keton-id/cora/commit/0487126494140bdd865cc3aee094c339c0c56773))
+* **packaging:** nest npm package under packaging/ for future packagers ([da8081d](https://github.com/keton-id/cora/commit/da8081d4b1fe0d7422e9e6132c541ef2fbb8493f))
+* **repo:** CODEOWNERS to root + nest npm under packaging/ ([b11ca7c](https://github.com/keton-id/cora/commit/b11ca7cdc5e6f9fdd4cd32b5c10fd14f7762985b))
+* **repo:** move CODEOWNERS to repository root ([a5e0b7d](https://github.com/keton-id/cora/commit/a5e0b7db11ddee0839f91c100cc7fc00079a2822))
+* **service,cli:** pass caller stdio to spawn child via SCM_RIGHTS (POSIX) ([4066647](https://github.com/keton-id/cora/commit/4066647d716d59c4f84ab0155f15fa00be88adf5))
+* **service:** inherit daemon env when spawning cr exec target on Windows ([eaf8d25](https://github.com/keton-id/cora/commit/eaf8d25574a08c6e44aa6d498858041743092552))
+* **service:** only quote argv entries that need it on Windows cmdline ([9cdd28f](https://github.com/keton-id/cora/commit/9cdd28ffd0082e5752062a532045e09b1b67a224))
+* **service:** restrict CreateProcessW handle inheritance to explicit list ([f7e3f38](https://github.com/keton-id/cora/commit/f7e3f38165ae2a375ffea377e80dc778254eaaa7))
+* **service:** reuse single named-pipe HANDLE across accept iterations ([f82358e](https://github.com/keton-id/cora/commit/f82358e2fc7f0e180af1388f8bbf0533f46b1a82))
+* **tui:** add a keyboard help modal ([061bd5e](https://github.com/keton-id/cora/commit/061bd5e4069fa5461618f65240b852d75bd14a17))
+* **tui:** make the dashboard grid reflow with terminal width ([0d8a168](https://github.com/keton-id/cora/commit/0d8a1689c17ee3878d605ee7dad0aece34bf430e))
+* **tui:** paint immediately and survive narrow terminals ([f10dda6](https://github.com/keton-id/cora/commit/f10dda6781ef2b8cb3ec48054674ac6e1feb438c))
+* **tui:** resize, lock guard, passphrase mask, help modal ([e343c33](https://github.com/keton-id/cora/commit/e343c338db594ab9e4cc5348ac40d6f4522eec90))
+* **tui:** show passphrase mask characters ([054a1a1](https://github.com/keton-id/cora/commit/054a1a1a170bf25950877b9e914d6f1de83717f5))
+* **tui:** skip lock modal when service is offline ([bafca2c](https://github.com/keton-id/cora/commit/bafca2c5f40c0220721f5572a9a58ef76b69e58c))
+* **tui:** wire SIGWINCH so resize events reach the event loop ([69dbcb0](https://github.com/keton-id/cora/commit/69dbcb027c3fb0cb0ff9936af7b8e923d720d3fc))
+
 ## [0.8.1-alpha.1](https://github.com/keton-id/cora/compare/v0.8.0-alpha.1...v0.8.1-alpha.1) (2026-06-03)
 
 
