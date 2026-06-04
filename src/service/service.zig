@@ -231,13 +231,19 @@ pub const Service = struct {
     }
 
     fn runWindows(self: *Service) !void {
+        // Reuse the single named-pipe HANDLE across accept iterations.
+        // DisconnectNamedPipe + ConnectNamedPipe puts the same handle
+        // back into the listening state, so the same kernel pipe object
+        // serves every connection. Closing + re-creating with
+        // FILE_FLAG_FIRST_PIPE_INSTANCE between iterations is racy:
+        // after CloseHandle the kernel still references the previous
+        // instance briefly while a disconnecting client is reaped, and
+        // a back-to-back createServerPipe call hits that window and
+        // fails. Polling clients (cr status loops, the new Windows
+        // integration tests' pollStatus) hit it deterministically and
+        // caused the accept loop to break, killing the daemon
+        // mid-test.
         while (!self.shutdown.load(.acquire)) {
-            // Recreate the pipe instance once the previous client
-            // disconnects so we can wait for the next one. The very first
-            // iteration uses the instance created in Server.start.
-            if (@intFromPtr(self.server.pipe) == @intFromPtr(pipe_windows.INVALID_HANDLE_VALUE)) {
-                self.server.pipe = pipe_windows.createServerPipe(@ptrCast(&self.server.name_wide)) catch break;
-            }
             pipe_windows.connectServer(self.server.pipe) catch break;
             if (self.shutdown.load(.acquire)) break;
 
@@ -245,10 +251,7 @@ pub const Service = struct {
             self.handle(&stream) catch |err| {
                 std.log.warn("handler error: {s}", .{@errorName(err)});
             };
-            // Disconnect + recreate next instance.
             pipe_windows.disconnectClient(self.server.pipe);
-            pipe_windows.closeHandle(self.server.pipe);
-            self.server.pipe = pipe_windows.INVALID_HANDLE_VALUE;
             if (self.shutdown.load(.acquire)) break;
         }
     }
