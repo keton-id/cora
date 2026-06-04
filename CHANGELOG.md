@@ -8,6 +8,29 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.9.0](https://github.com/keton-id/cora/compare/v0.7.0...v0.9.0) (2026-06-04)
+
+## What's Changed
+* chore(changelog): enrich v0.7.0 with contributors by @github-actions[bot] in https://github.com/keton-id/cora/pull/28
+* feat(windows): Tier-2 parity — Named Pipes, peer PID, daemonize by @mulhamna in https://github.com/keton-id/cora/pull/29
+* chore: CODEOWNERS + collapsible install methods in README by @mulhamna in https://github.com/keton-id/cora/pull/33
+* chore(main): release 0.8.0-alpha.1 by @mulhamna in https://github.com/keton-id/cora/pull/30
+* fix(service): exempt mgmt ops (ping/status/lock) from caller policy by @resincode in https://github.com/keton-id/cora/pull/31
+* fix: land PR #32 and #34 on main by @mulhamna in https://github.com/keton-id/cora/pull/36
+* chore(main): release 0.8.1-alpha.1 by @mulhamna in https://github.com/keton-id/cora/pull/35
+* fix(tui): resize, lock guard, passphrase mask, help modal by @mulhamna in https://github.com/keton-id/cora/pull/38
+* fix(repo): CODEOWNERS to root + nest npm under packaging/ by @mulhamna in https://github.com/keton-id/cora/pull/41
+* fix: land PR #37 and #40 on main by @mulhamna in https://github.com/keton-id/cora/pull/42
+* feat(windows): cr exec stdio parity via DuplicateHandle + PATH/PATHEXT target resolve by @mulhamna in https://github.com/keton-id/cora/pull/43
+* chore(main): release 0.9.0-alpha.1 by @mulhamna in https://github.com/keton-id/cora/pull/39
+
+
+**Full Changelog**: https://github.com/keton-id/cora/compare/v0.7.0...v0.9.0
+
+### Contributors
+
+@github-actions, @mulhamna, @resincode
+
 ## [0.9.0-alpha.1](https://github.com/keton-id/cora/compare/v0.8.1-alpha.1...v0.9.0-alpha.1) (2026-06-04)
 
 
