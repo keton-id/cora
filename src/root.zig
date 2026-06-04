@@ -11,6 +11,7 @@ pub const proto = @import("service/proto.zig");
 pub const idle = @import("service/idle.zig");
 pub const service = @import("service/service.zig");
 pub const client = @import("service/client.zig");
+pub const spawn_windows = @import("service/spawn_windows.zig");
 pub const policy = @import("policy/policy.zig");
 pub const identity = @import("identity/identity.zig");
 pub const audit = @import("audit.zig");

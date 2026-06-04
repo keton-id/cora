@@ -175,11 +175,17 @@ pub fn exec(
     defer allocator.free(payload);
 
     if (builtin.os.tag == .windows) {
-        // Windows Named Pipe transport: SCM_RIGHTS not supported. The
-        // daemon's stdio is already detached to /dev/null/NUL, so child
-        // process output is currently lost on Windows. Tracked for a
-        // follow-up using `DuplicateHandle` through the pipe.
-        var f2 = try conn.roundtrip(.spawn, payload);
+        // Windows: Named Pipes don't carry ancillary data the SCM_RIGHTS
+        // way. Instead we ship the *values* of our stdin/stdout/stderr
+        // handles as a 24-byte prefix on the spawn payload, and the
+        // daemon `DuplicateHandle`s them out of our process via
+        // `OpenProcess(PROCESS_DUP_HANDLE, GetNamedPipeClientProcessId)`.
+        // The duplicated handles get plugged into STARTUPINFOW so the
+        // spawned child inherits our terminal, mirroring POSIX SCM_RIGHTS.
+        const win_payload = try encodeSpawnPayloadWithStdio(allocator, payload);
+        defer allocator.free(win_payload);
+
+        var f2 = try conn.roundtrip(.spawn, win_payload);
         defer f2.deinit(allocator);
         if (f2.op == @intFromEnum(proto.Op.err)) return CoraError.SecretNotAllowedForTask;
         if (f2.op != @intFromEnum(proto.Op.spawn)) return CoraError.Io;
@@ -205,6 +211,26 @@ pub fn exec(
     if (f2.op == @intFromEnum(proto.Op.err)) return CoraError.SecretNotAllowedForTask;
     if (f2.op != @intFromEnum(proto.Op.spawn)) return CoraError.Io;
     return proto.SpawnResp.decode(f2.payload);
+}
+
+/// Windows-only. Prepend our three `GetStdHandle` values (little-endian
+/// u64 each) to the existing spawn payload so the daemon can
+/// `DuplicateHandle` them across after reading the frame. The plain
+/// `proto.encodeSpawnPayload` body follows unchanged at byte 24.
+fn encodeSpawnPayloadWithStdio(
+    allocator: std.mem.Allocator,
+    base_payload: []const u8,
+) ![]u8 {
+    if (builtin.os.tag != .windows) unreachable;
+    const stdio = pipe_windows.callerStdioHandles();
+    const out = try allocator.alloc(u8, 24 + base_payload.len);
+    errdefer allocator.free(out);
+    inline for (0..3) |i| {
+        const v: u64 = @intCast(@intFromPtr(stdio[i]));
+        std.mem.writeInt(u64, out[i * 8 ..][0..8], v, .little);
+    }
+    @memcpy(out[24..], base_payload);
+    return out;
 }
 
 /// POSIX-only. Send `frame_bytes` over `fd` with our own stdin/stdout/stderr

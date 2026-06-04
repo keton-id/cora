@@ -10,7 +10,17 @@ const identity = @import("../identity/identity.zig");
 const policy_mod = @import("../policy/policy.zig");
 const audit = @import("../audit.zig");
 const pipe_windows = @import("pipe_windows.zig");
+const spawn_windows = @import("spawn_windows.zig");
 const CoraError = @import("../error.zig").CoraError;
+
+/// Per-platform stdio passthrough handle carried from `handle` into
+/// `handleSpawn`. POSIX: three fds captured from SCM_RIGHTS. Windows:
+/// three HANDLEs duplicated into the daemon process via
+/// `pipe_windows.duplicateClientStdio`.
+const StdioPassthrough = if (builtin.os.tag == .windows)
+    ?[3]pipe_windows.HANDLE
+else
+    ?[3]std.posix.fd_t;
 
 extern "kernel32" fn GetProcessId(Process: *anyopaque) callconv(.winapi) u32;
 
@@ -30,14 +40,15 @@ pub const default_socket_format = "/tmp/cora-{d}.sock";
 
 /// Resolve the per-user IPC endpoint string used by `cr unlock` and clients.
 ///
-/// POSIX: AF_UNIX socket path `/tmp/cora-<uid>.sock`.
-/// Windows (Tier 2): Named Pipe name `\\.\pipe\cora-<username>`.
+/// POSIX:   AF_UNIX socket path `/tmp/cora-<uid>.sock`.
+/// Windows: Named Pipe name `\\.\pipe\cora-<username>`.
 ///
-/// Returns the path bytes inside `buf`. Tier-2 Windows uses Named Pipes
+/// Returns the path bytes inside `buf`. Windows uses Named Pipes
 /// (`pipe_windows.zig`) so the kernel can report the connected client's
-/// PID via `GetNamedPipeClientProcessId`. The string is opaque to
-/// callers — `service.start` and `client.connect` interpret it
-/// per-platform.
+/// PID via `GetNamedPipeClientProcessId` — same trust surface as
+/// `SO_PEERCRED` on Linux and `LOCAL_PEERPID` on macOS. The string is
+/// opaque to callers — `service.start` and `client.connect` interpret
+/// it per-platform.
 pub fn defaultSocketPath(buf: []u8) ![]u8 {
     if (builtin.os.tag == .windows) {
         return pipe_windows.defaultPipeNameUtf8(buf);
@@ -220,13 +231,19 @@ pub const Service = struct {
     }
 
     fn runWindows(self: *Service) !void {
+        // Reuse the single named-pipe HANDLE across accept iterations.
+        // DisconnectNamedPipe + ConnectNamedPipe puts the same handle
+        // back into the listening state, so the same kernel pipe object
+        // serves every connection. Closing + re-creating with
+        // FILE_FLAG_FIRST_PIPE_INSTANCE between iterations is racy:
+        // after CloseHandle the kernel still references the previous
+        // instance briefly while a disconnecting client is reaped, and
+        // a back-to-back createServerPipe call hits that window and
+        // fails. Polling clients (cr status loops, the new Windows
+        // integration tests' pollStatus) hit it deterministically and
+        // caused the accept loop to break, killing the daemon
+        // mid-test.
         while (!self.shutdown.load(.acquire)) {
-            // Recreate the pipe instance once the previous client
-            // disconnects so we can wait for the next one. The very first
-            // iteration uses the instance created in Server.start.
-            if (@intFromPtr(self.server.pipe) == @intFromPtr(pipe_windows.INVALID_HANDLE_VALUE)) {
-                self.server.pipe = pipe_windows.createServerPipe(@ptrCast(&self.server.name_wide)) catch break;
-            }
             pipe_windows.connectServer(self.server.pipe) catch break;
             if (self.shutdown.load(.acquire)) break;
 
@@ -234,10 +251,7 @@ pub const Service = struct {
             self.handle(&stream) catch |err| {
                 std.log.warn("handler error: {s}", .{@errorName(err)});
             };
-            // Disconnect + recreate next instance.
             pipe_windows.disconnectClient(self.server.pipe);
-            pipe_windows.closeHandle(self.server.pipe);
-            self.server.pipe = pipe_windows.INVALID_HANDLE_VALUE;
             if (self.shutdown.load(.acquire)) break;
         }
     }
@@ -404,24 +418,51 @@ pub const Service = struct {
         // the spawn frame and (on POSIX) the SCM_RIGHTS-attached stdio fds.
         if (task_name_len == 0) return;
 
-        var stdio_fds: ?[3]std.posix.fd_t = null;
+        var stdio_passthrough: StdioPassthrough = null;
         defer {
-            if (stdio_fds) |fds| {
-                for (fds) |fd| _ = std.c.close(fd);
+            if (stdio_passthrough) |handles| {
+                if (builtin.os.tag == .windows) {
+                    pipe_windows.closeStdioDups(handles);
+                } else {
+                    for (handles) |fd| _ = std.c.close(fd);
+                }
             }
         }
 
         var spawn_frame = blk: {
             if (builtin.os.tag == .windows) {
-                // Windows transport (Named Pipes) cannot piggyback fds the
-                // way SCM_RIGHTS does on POSIX. Read the spawn frame via
-                // the existing buffered reader. The child will inherit the
-                // daemon's /dev/null stdio — `cmdExec` emits a stderr
-                // warning before connecting so the operator knows output
-                // is going to be lost on this platform.
-                break :blk proto.readFrame(&reader.interface, self.allocator) catch return;
+                // Windows: Named Pipes cannot carry ancillary data the
+                // SCM_RIGHTS way. The client ships the *values* of its
+                // stdin/stdout/stderr handles as a 24-byte prefix on the
+                // spawn payload. We `DuplicateHandle` them across via
+                // `OpenProcess(PROCESS_DUP_HANDLE, client_pid)` so they
+                // become valid in the daemon process, then plug them
+                // into the spawned child's STARTUPINFOW.
+                var f = proto.readFrame(&reader.interface, self.allocator) catch return;
+                if (f.payload.len < 24) {
+                    f.deinit(self.allocator);
+                    return;
+                }
+                var src: [3]pipe_windows.HANDLE = undefined;
+                inline for (0..3) |i| {
+                    const v = std.mem.readInt(u64, f.payload[i * 8 ..][0..8], .little);
+                    src[i] = @ptrFromInt(@as(usize, @intCast(v)));
+                }
+                const client_pid = pipe_windows.clientProcessId(stream.idHandle()) catch {
+                    f.deinit(self.allocator);
+                    return;
+                };
+                stdio_passthrough = pipe_windows.duplicateClientStdio(client_pid, src) catch null;
+                // Strip the 24-byte stdio prefix so `decodeSpawnPayload`
+                // sees the same layout it does on POSIX.
+                const stripped = self.allocator.dupe(u8, f.payload[24..]) catch {
+                    f.deinit(self.allocator);
+                    return;
+                };
+                f.deinit(self.allocator);
+                break :blk proto.Frame{ .op = @intFromEnum(proto.Op.spawn), .payload = stripped };
             }
-            break :blk recvFrameWithStdioFds(stream.idHandle(), self.allocator, &stdio_fds) catch return;
+            break :blk recvFrameWithStdioFds(stream.idHandle(), self.allocator, &stdio_passthrough) catch return;
         };
         defer spawn_frame.deinit(self.allocator);
 
@@ -444,7 +485,7 @@ pub const Service = struct {
             return;
         }
 
-        self.handleSpawn(&writer.interface, &ident, task_name_buf[0..task_name_len], spawn_frame.payload, stdio_fds) catch |err| {
+        self.handleSpawn(&writer.interface, &ident, task_name_buf[0..task_name_len], spawn_frame.payload, stdio_passthrough) catch |err| {
             std.log.warn("spawn failed: {s}", .{@errorName(err)});
             proto.writeFrame(&writer.interface, .err, @errorName(err)) catch {};
             writer.interface.flush() catch {};
@@ -457,7 +498,7 @@ pub const Service = struct {
         ident: *const identity.CallerIdentity,
         declared_task: []const u8,
         payload: []const u8,
-        stdio_fds: ?[3]std.posix.fd_t,
+        stdio: StdioPassthrough,
     ) !void {
         var parsed = try proto.decodeSpawnPayload(self.allocator, payload);
         defer parsed.deinit();
@@ -537,48 +578,121 @@ pub const Service = struct {
 
         const start_ms = nowMs(self.io);
 
-        // Hand the caller's terminal to the child when the client sent
-        // stdio fds via SCM_RIGHTS. Without them the child inherits the
-        // daemon's `/dev/null` stdio (set up by fork+setsid in cmdUnlock),
-        // which silently swallows stdout — see the related fix in cmdExec
-        // that emits a warning on platforms where fd passing is not yet
-        // supported.
-        var spawn_opts: std.process.SpawnOptions = .{
-            .argv = parsed.argv,
-            .environ_map = &env_map,
-        };
-        if (stdio_fds) |fds| {
-            spawn_opts.stdin = .{ .file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } } };
-            spawn_opts.stdout = .{ .file = .{ .handle = fds[1], .flags = .{ .nonblocking = false } } };
-            spawn_opts.stderr = .{ .file = .{ .handle = fds[2], .flags = .{ .nonblocking = false } } };
-        }
+        var child_pid: i32 = 0;
+        var code: i32 = 0;
 
-        var child = try std.process.spawn(self.io, spawn_opts);
-        const child_pid: i32 = childPid(child);
+        if (builtin.os.tag == .windows) {
+            // Windows path: build wide command line + Windows env block
+            // from the same argv + env_map, then CreateProcessW the child
+            // inheriting the three already-duplicated stdio handles.
+            const cmdline = try spawn_windows.buildCommandLineWide(self.allocator, parsed.argv);
+            defer self.allocator.free(cmdline);
 
-        for (injected_names.items) |name| {
-            self.emit(.{ .secret_injected = .{
-                .ts_ms = nowMs(self.io),
-                .task = declared_task,
-                .secret_name = name,
-                .target_pid = child_pid,
-            } });
-        }
-        for (missing_names.items) |name| {
-            self.emit(.{ .secret_missing = .{
-                .ts_ms = nowMs(self.io),
-                .task = declared_task,
-                .secret_name = name,
-                .target_pid = child_pid,
-            } });
-        }
+            // Translate env_map into pair list for buildEnvBlockWide. The
+            // env_block carries secret values verbatim — secureZero it
+            // before freeing.
+            var pairs = std.ArrayList(spawn_windows.EnvPair).empty;
+            defer pairs.deinit(self.allocator);
+            var env_it = env_map.iterator();
+            while (env_it.next()) |entry| {
+                try pairs.append(self.allocator, .{
+                    .name = entry.key_ptr.*,
+                    .value = entry.value_ptr.*,
+                });
+            }
+            const env_block = try spawn_windows.buildEnvBlockWide(self.allocator, pairs.items);
+            defer {
+                std.crypto.secureZero(u16, env_block);
+                self.allocator.free(env_block);
+            }
 
-        const term = try child.wait(self.io);
-        const code: i32 = switch (term) {
-            .exited => |c| @intCast(c),
-            .signal => |s| -@as(i32, @intCast(@intFromEnum(s))),
-            .stopped, .unknown => -1,
-        };
+            // Convert exe path to UTF-16Z for lpApplicationName.
+            const exe_utf8 = parsed.argv[0];
+            var exe_wide_buf = try self.allocator.alloc(u16, exe_utf8.len + 1);
+            defer self.allocator.free(exe_wide_buf);
+            const exe_n = try std.unicode.utf8ToUtf16Le(exe_wide_buf, exe_utf8);
+            exe_wide_buf[exe_n] = 0;
+
+            // Use caller-supplied stdio handles when present; fall back
+            // to the daemon's NUL stdio if the dup somehow failed (the
+            // child still runs, output goes nowhere — same as the
+            // pre-DuplicateHandle Windows behavior, but never silent
+            // because we already accepted the spawn frame).
+            const stdio_handles: [3]pipe_windows.HANDLE = if (stdio) |h| h else .{
+                pipe_windows.INVALID_HANDLE_VALUE,
+                pipe_windows.INVALID_HANDLE_VALUE,
+                pipe_windows.INVALID_HANDLE_VALUE,
+            };
+
+            const child = try spawn_windows.spawnInheritingStdio(
+                @ptrCast(exe_wide_buf.ptr),
+                @ptrCast(cmdline.ptr),
+                @ptrCast(env_block.ptr),
+                stdio_handles,
+            );
+            child_pid = @intCast(child.pid);
+
+            for (injected_names.items) |name| {
+                self.emit(.{ .secret_injected = .{
+                    .ts_ms = nowMs(self.io),
+                    .task = declared_task,
+                    .secret_name = name,
+                    .target_pid = child_pid,
+                } });
+            }
+            for (missing_names.items) |name| {
+                self.emit(.{ .secret_missing = .{
+                    .ts_ms = nowMs(self.io),
+                    .task = declared_task,
+                    .secret_name = name,
+                    .target_pid = child_pid,
+                } });
+            }
+
+            const exit_code = try spawn_windows.waitForExit(child);
+            code = @intCast(exit_code);
+        } else {
+            // POSIX path: hand the caller's terminal to the child via
+            // the SCM_RIGHTS-captured fds. Without them the child inherits
+            // the daemon's `/dev/null` stdio (set up by fork+setsid in
+            // cmdUnlock), which silently swallows stdout.
+            var spawn_opts: std.process.SpawnOptions = .{
+                .argv = parsed.argv,
+                .environ_map = &env_map,
+            };
+            if (stdio) |fds| {
+                spawn_opts.stdin = .{ .file = .{ .handle = fds[0], .flags = .{ .nonblocking = false } } };
+                spawn_opts.stdout = .{ .file = .{ .handle = fds[1], .flags = .{ .nonblocking = false } } };
+                spawn_opts.stderr = .{ .file = .{ .handle = fds[2], .flags = .{ .nonblocking = false } } };
+            }
+
+            var child = try std.process.spawn(self.io, spawn_opts);
+            child_pid = childPid(child);
+
+            for (injected_names.items) |name| {
+                self.emit(.{ .secret_injected = .{
+                    .ts_ms = nowMs(self.io),
+                    .task = declared_task,
+                    .secret_name = name,
+                    .target_pid = child_pid,
+                } });
+            }
+            for (missing_names.items) |name| {
+                self.emit(.{ .secret_missing = .{
+                    .ts_ms = nowMs(self.io),
+                    .task = declared_task,
+                    .secret_name = name,
+                    .target_pid = child_pid,
+                } });
+            }
+
+            const term = try child.wait(self.io);
+            code = switch (term) {
+                .exited => |c| @intCast(c),
+                .signal => |s| -@as(i32, @intCast(@intFromEnum(s))),
+                .stopped, .unknown => -1,
+            };
+        }
 
         self.emit(.{ .task_end = .{
             .ts_ms = nowMs(self.io),
@@ -639,7 +753,7 @@ pub fn requiresCallerPolicy(op: proto.Op) bool {
 fn recvFrameWithStdioFds(
     fd: std.posix.fd_t,
     allocator: std.mem.Allocator,
-    fds_out: *?[3]std.posix.fd_t,
+    fds_out: *StdioPassthrough,
 ) !proto.Frame {
     if (builtin.os.tag == .windows) unreachable;
 
@@ -710,6 +824,8 @@ fn recvFrameWithStdioFds(
 fn resolveTargetPath(target: []const u8, out_buf: []u8) ![]const u8 {
     if (target.len == 0) return error.TargetNotFound;
 
+    if (builtin.os.tag == .windows) return resolveTargetPathWindows(target, out_buf);
+
     if (target[0] == '/' or (target.len >= 2 and target[0] == '.' and target[1] == '/') or
         (target.len >= 3 and target[0] == '.' and target[1] == '.' and target[2] == '/'))
     {
@@ -740,7 +856,84 @@ fn resolveTargetPath(target: []const u8, out_buf: []u8) ![]const u8 {
     return error.TargetNotFound;
 }
 
+/// Resolve `target` to an absolute path on Windows, searching `PATH`
+/// (`;`-separated) and trying each entry in `PATHEXT` (default
+/// `.COM;.EXE;.BAT;.CMD`) just like `cmd.exe` does. Absolute inputs
+/// (containing a drive letter or starting with `\\`) pass through after
+/// the existence check.
+fn resolveTargetPathWindows(target: []const u8, out_buf: []u8) ![]const u8 {
+    if (isAbsoluteWindowsPath(target)) {
+        if (target.len > out_buf.len) return error.TargetNotFound;
+        @memcpy(out_buf[0..target.len], target);
+        if (!fileExistsWindows(out_buf[0..target.len])) return error.TargetNotFound;
+        return out_buf[0..target.len];
+    }
+
+    const path_env_ptr = std.c.getenv("PATH") orelse return error.TargetNotFound;
+    const path_env = std.mem.span(path_env_ptr);
+
+    const pathext_default = ".COM;.EXE;.BAT;.CMD";
+    const pathext_env: []const u8 = if (std.c.getenv("PATHEXT")) |p|
+        std.mem.span(p)
+    else
+        pathext_default;
+
+    const has_ext = std.mem.lastIndexOfScalar(u8, target, '.') != null and
+        std.mem.lastIndexOfScalar(u8, target, '\\') == null;
+
+    var path_it = std.mem.tokenizeScalar(u8, path_env, ';');
+    while (path_it.next()) |dir| {
+        if (dir.len == 0) continue;
+        const need_sep: usize = if (dir[dir.len - 1] == '\\' or dir[dir.len - 1] == '/') 0 else 1;
+
+        // Try the bare target first when it already has an extension.
+        if (has_ext) {
+            const total = dir.len + need_sep + target.len;
+            if (total <= out_buf.len) {
+                @memcpy(out_buf[0..dir.len], dir);
+                if (need_sep == 1) out_buf[dir.len] = '\\';
+                @memcpy(out_buf[dir.len + need_sep ..][0..target.len], target);
+                if (fileExistsWindows(out_buf[0..total])) return out_buf[0..total];
+            }
+        }
+
+        var ext_it = std.mem.tokenizeScalar(u8, pathext_env, ';');
+        while (ext_it.next()) |ext| {
+            if (ext.len == 0) continue;
+            const total = dir.len + need_sep + target.len + ext.len;
+            if (total > out_buf.len) continue;
+            @memcpy(out_buf[0..dir.len], dir);
+            if (need_sep == 1) out_buf[dir.len] = '\\';
+            @memcpy(out_buf[dir.len + need_sep ..][0..target.len], target);
+            @memcpy(out_buf[dir.len + need_sep + target.len ..][0..ext.len], ext);
+            if (fileExistsWindows(out_buf[0..total])) return out_buf[0..total];
+        }
+    }
+    return error.TargetNotFound;
+}
+
+fn isAbsoluteWindowsPath(p: []const u8) bool {
+    if (p.len >= 2 and p[1] == ':') return true; // drive-letter absolute (C:\...)
+    if (p.len >= 2 and (p[0] == '\\' or p[0] == '/') and (p[1] == '\\' or p[1] == '/')) return true; // UNC
+    return false;
+}
+
+fn fileExistsWindows(path: []const u8) bool {
+    if (builtin.os.tag != .windows) return false;
+    var wide_buf: [1024]u16 = undefined;
+    if (path.len + 1 > wide_buf.len) return false;
+    const n = std.unicode.utf8ToUtf16Le(&wide_buf, path) catch return false;
+    wide_buf[n] = 0;
+    const attrs = GetFileAttributesW(@ptrCast(&wide_buf));
+    return attrs != INVALID_FILE_ATTRIBUTES;
+}
+
+const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFFFFFF;
+
+extern "kernel32" fn GetFileAttributesW(lpFileName: [*:0]const u16) callconv(.winapi) u32;
+
 fn isExecutable(path: []const u8) bool {
+    if (builtin.os.tag == .windows) return fileExistsWindows(path);
     const path_z = std.posix.toPosixPath(path) catch return false;
     // X_OK = 0x01 on POSIX. std.posix.access is not in 0.16 in a
     // cross-portable shape, so use libc directly. Returns 0 on success.

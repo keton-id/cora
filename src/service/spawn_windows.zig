@@ -1,13 +1,19 @@
-//! Daemonize the Cora service on Windows by spawning the foreground
-//! code path as a detached child process.
+//! Windows `CreateProcessW` helpers used by two distinct code paths:
 //!
-//! POSIX uses fork() + setsid() + stdio redirection (`src/main.zig`
-//! cmdUnlock). Windows has no fork; instead we re-exec `cr unlock
-//! --foreground` via `CreateProcessW` with `DETACHED_PROCESS |
-//! CREATE_NEW_PROCESS_GROUP` and pipe the passphrase across stdin
-//! exactly once. The child's foreground-mode code reads from stdin
-//! via the existing `readSecret` path (`main.zig`), then closes its
-//! end of the pipe and proceeds normally.
+//! 1. `spawnDetachedForeground` — daemonize the Cora service on
+//!    Windows by re-execing `cr unlock --foreground` as a detached
+//!    child, piping the passphrase across stdin once. POSIX uses
+//!    fork() + setsid() + stdio redirection (`src/main.zig`
+//!    cmdUnlock); Windows has no fork, so we go through CreateProcessW
+//!    with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`.
+//!
+//! 2. `spawnInheritingStdio` + `waitForExit` — used by the service to
+//!    spawn `cr exec`'s target binary while inheriting the caller's
+//!    stdin/stdout/stderr handles (already duplicated into the daemon
+//!    process by `pipe_windows.duplicateClientStdio`). This is the
+//!    Windows counterpart to POSIX `SCM_RIGHTS` fd passing — the child
+//!    writes directly to the caller's terminal/pipes instead of the
+//!    daemon's `NUL` stdio.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -29,6 +35,11 @@ pub const HANDLE_FLAG_INHERIT: DWORD = 0x00000001;
 pub const DETACHED_PROCESS: DWORD = 0x00000008;
 pub const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
 pub const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
+pub const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
+
+// PROC_THREAD_ATTRIBUTE_HANDLE_LIST = ProcThreadAttributeValue(2, 0, 1, 0)
+// = (2 & 0xFFFF) | (1 << 18) = 0x20002
+pub const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x00020002;
 
 // SECURITY_ATTRIBUTES with bInheritHandle=1 used to make the read
 // pipe handle inheritable by the child.
@@ -57,6 +68,11 @@ const STARTUPINFOW = extern struct {
     hStdInput: ?HANDLE,
     hStdOutput: ?HANDLE,
     hStdError: ?HANDLE,
+};
+
+const STARTUPINFOEXW = extern struct {
+    StartupInfo: STARTUPINFOW,
+    lpAttributeList: LPVOID,
 };
 
 const PROCESS_INFORMATION = extern struct {
@@ -110,7 +126,53 @@ extern "kernel32" fn GetModuleFileNameW(
 
 extern "kernel32" fn GetCommandLineW() callconv(.winapi) LPWSTR;
 
+extern "kernel32" fn InitializeProcThreadAttributeList(
+    lpAttributeList: LPVOID,
+    dwAttributeCount: DWORD,
+    dwFlags: DWORD,
+    lpSize: *usize,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn UpdateProcThreadAttribute(
+    lpAttributeList: LPVOID,
+    dwFlags: DWORD,
+    Attribute: usize,
+    lpValue: LPVOID,
+    cbSize: usize,
+    lpPreviousValue: LPVOID,
+    lpReturnSize: ?*usize,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: LPVOID) callconv(.winapi) void;
+
+extern "kernel32" fn HeapAlloc(hHeap: HANDLE, dwFlags: DWORD, dwBytes: usize) callconv(.winapi) LPVOID;
+extern "kernel32" fn HeapFree(hHeap: HANDLE, dwFlags: DWORD, lpMem: LPVOID) callconv(.winapi) BOOL;
+extern "kernel32" fn GetProcessHeap() callconv(.winapi) HANDLE;
+
+extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) ?[*]u16;
+extern "kernel32" fn FreeEnvironmentStringsW(penv: [*]u16) callconv(.winapi) BOOL;
+
+extern "kernel32" fn WaitForSingleObject(
+    hHandle: HANDLE,
+    dwMilliseconds: DWORD,
+) callconv(.winapi) DWORD;
+
+extern "kernel32" fn GetExitCodeProcess(
+    hProcess: HANDLE,
+    lpExitCode: *DWORD,
+) callconv(.winapi) BOOL;
+
+pub const INFINITE: DWORD = 0xFFFFFFFF;
+
 pub const Spawned = struct {
+    pid: u32,
+};
+
+pub const ChildProcess = struct {
+    /// Process handle for `WaitForSingleObject` + `GetExitCodeProcess`.
+    /// Caller owns the handle and must close it (or use `waitForExit`,
+    /// which closes it as part of waiting).
+    process: HANDLE,
     pid: u32,
 };
 
@@ -173,25 +235,74 @@ pub fn spawnDetachedForeground(
         return error.SetHandleInformationFailed;
     }
 
-    var si = STARTUPINFOW{
-        .cb = @sizeOf(STARTUPINFOW),
-        .lpReserved = null,
-        .lpDesktop = null,
-        .lpTitle = null,
-        .dwX = 0,
-        .dwY = 0,
-        .dwXSize = 0,
-        .dwYSize = 0,
-        .dwXCountChars = 0,
-        .dwYCountChars = 0,
-        .dwFillAttribute = 0,
-        .dwFlags = STARTF_USESTDHANDLES,
-        .wShowWindow = 0,
-        .cbReserved2 = 0,
-        .lpReserved2 = null,
-        .hStdInput = read_h,
-        .hStdOutput = null,
-        .hStdError = null,
+    // Restrict handle inheritance to ONLY the pipe read end via
+    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Without this, bInheritHandles=TRUE
+    // would pass every inheritable handle in the parent process to the
+    // grandchild — including any stdout/stderr pipes that the process
+    // spawning cr.exe set up. The detached daemon would then hold those
+    // pipe write ends for its entire lifetime (default idle timeout 15min),
+    // preventing the spawning process from observing EOF on the parent
+    // cr.exe's stdout. That blocked `cr unlock` calls made from any
+    // pipe-capturing parent (CI test runner, supervisor, …) for the full
+    // idle window before returning.
+    const attr_size_needed = blk: {
+        var size: usize = 0;
+        _ = InitializeProcThreadAttributeList(null, 1, 0, &size);
+        break :blk size;
+    };
+    const heap = GetProcessHeap();
+    const attr_list = HeapAlloc(heap, 0, attr_size_needed) orelse {
+        _ = CloseHandle(read_h);
+        _ = CloseHandle(write_h);
+        return error.AttrListAllocFailed;
+    };
+    defer _ = HeapFree(heap, 0, attr_list);
+
+    var attr_size_inout: usize = attr_size_needed;
+    if (InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size_inout) == 0) {
+        _ = CloseHandle(read_h);
+        _ = CloseHandle(write_h);
+        return error.InitializeAttrListFailed;
+    }
+    defer DeleteProcThreadAttributeList(attr_list);
+
+    var inherit_handles = [_]HANDLE{read_h};
+    if (UpdateProcThreadAttribute(
+        attr_list,
+        0,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        @ptrCast(&inherit_handles),
+        @sizeOf(@TypeOf(inherit_handles)),
+        null,
+        null,
+    ) == 0) {
+        _ = CloseHandle(read_h);
+        _ = CloseHandle(write_h);
+        return error.UpdateAttrListFailed;
+    }
+
+    var si_ex = STARTUPINFOEXW{
+        .StartupInfo = .{
+            .cb = @sizeOf(STARTUPINFOEXW),
+            .lpReserved = null,
+            .lpDesktop = null,
+            .lpTitle = null,
+            .dwX = 0,
+            .dwY = 0,
+            .dwXSize = 0,
+            .dwYSize = 0,
+            .dwXCountChars = 0,
+            .dwYCountChars = 0,
+            .dwFillAttribute = 0,
+            .dwFlags = STARTF_USESTDHANDLES,
+            .wShowWindow = 0,
+            .cbReserved2 = 0,
+            .lpReserved2 = null,
+            .hStdInput = read_h,
+            .hStdOutput = null,
+            .hStdError = null,
+        },
+        .lpAttributeList = attr_list,
     };
 
     var pi = std.mem.zeroes(PROCESS_INFORMATION);
@@ -201,11 +312,11 @@ pub fn spawnDetachedForeground(
         @ptrCast(cmdline.ptr),
         null,
         null,
-        1, // bInheritHandles — required for the stdin pipe to cross
-        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        1, // bInheritHandles — required even with HANDLE_LIST attribute
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | EXTENDED_STARTUPINFO_PRESENT,
         null,
         null,
-        &si,
+        @ptrCast(&si_ex),
         &pi,
     );
 
@@ -237,10 +348,300 @@ pub fn spawnDetachedForeground(
     return .{ .pid = pi.dwProcessId };
 }
 
+/// Quote a single argv entry per the Windows command-line rules
+/// (MSDN "Parsing C++ Command-Line Arguments"). Backslashes and the
+/// quote character itself are doubled only when they precede a quote;
+/// otherwise they are passed through. Quotes are only added when the
+/// arg is empty or contains a character that the receiver's
+/// `CommandLineToArgvW` would treat as a separator — leaving simple
+/// switches like `/c` unquoted is important because `cmd.exe` does its
+/// own raw-cmdline parsing for the rest after `/c` and does not
+/// understand a quoted `"/c"` as the switch.
+fn appendQuotedArg(out: *std.ArrayList(u8), allocator: std.mem.Allocator, arg: []const u8) !void {
+    const needs_quotes = arg.len == 0 or std.mem.indexOfAny(u8, arg, " \t\n\x0B\"") != null;
+    if (!needs_quotes) {
+        try out.appendSlice(allocator, arg);
+        return;
+    }
+    try out.append(allocator, '"');
+    var i: usize = 0;
+    while (i < arg.len) {
+        var n_back: usize = 0;
+        while (i < arg.len and arg[i] == '\\') : (i += 1) n_back += 1;
+        if (i == arg.len) {
+            // Trailing backslashes — double each so the closing quote
+            // is not consumed as an escape.
+            for (0..n_back * 2) |_| try out.append(allocator, '\\');
+        } else if (arg[i] == '"') {
+            for (0..n_back * 2 + 1) |_| try out.append(allocator, '\\');
+            try out.append(allocator, '"');
+            i += 1;
+        } else {
+            for (0..n_back) |_| try out.append(allocator, '\\');
+            try out.append(allocator, arg[i]);
+            i += 1;
+        }
+    }
+    try out.append(allocator, '"');
+}
+
+/// Build a NUL-terminated UTF-16 command line from a UTF-8 argv array,
+/// applying the Windows quoting rules so the child's CommandLineToArgvW
+/// sees the same argv tokenization. Caller owns the returned slice.
+pub fn buildCommandLineWide(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+) ![]u16 {
+    var utf8 = std.ArrayList(u8).empty;
+    defer utf8.deinit(allocator);
+    for (argv, 0..) |a, i| {
+        if (i != 0) try utf8.append(allocator, ' ');
+        try appendQuotedArg(&utf8, allocator, a);
+    }
+
+    var wide = std.ArrayList(u16).empty;
+    errdefer wide.deinit(allocator);
+    try wide.ensureTotalCapacity(allocator, utf8.items.len + 1);
+    // utf8ToUtf16Le writes exactly N u16 for N-byte ASCII input; allocate
+    // generously to cover multi-byte sequences.
+    try wide.resize(allocator, utf8.items.len * 2 + 1);
+    const n = try std.unicode.utf8ToUtf16Le(wide.items, utf8.items);
+    wide.items[n] = 0;
+    wide.shrinkRetainingCapacity(n + 1);
+    return wide.toOwnedSlice(allocator);
+}
+
+pub const EnvPair = struct { name: []const u8, value: []const u8 };
+
+/// Build a Windows-style UTF-16 environment block (`KEY=VAL\0KEY=VAL\0\0`)
+/// that inherits the daemon's environment as a base and overlays the
+/// caller-supplied pairs on top (overrides by name match,
+/// case-insensitive per Windows convention). Inheriting is required so
+/// the spawned child can find `SystemRoot`, `PATH`, `PATHEXT` etc — bare
+/// `cmd.exe /c …` fails immediately without `SystemRoot` set. Caller
+/// owns the returned slice and is responsible for `secureZero`-ing it
+/// once the spawn is done because the block carries the overlay
+/// secrets verbatim.
+pub fn buildEnvBlockWide(
+    allocator: std.mem.Allocator,
+    pairs: []const EnvPair,
+) ![]u16 {
+    var out = std.ArrayList(u16).empty;
+    errdefer out.deinit(allocator);
+
+    // Emit overlay pairs first and record their names so we can skip
+    // the inherited entries that they shadow.
+    var overlay_names = std.ArrayList([]const u8).empty;
+    defer overlay_names.deinit(allocator);
+    for (pairs) |p| {
+        try appendUtf8AsWide(&out, allocator, p.name);
+        try out.append(allocator, '=');
+        try appendUtf8AsWide(&out, allocator, p.value);
+        try out.append(allocator, 0);
+        try overlay_names.append(allocator, p.name);
+    }
+
+    // Inherit daemon env, skipping anything overridden by `pairs`.
+    if (GetEnvironmentStringsW()) |env_ptr| {
+        defer _ = FreeEnvironmentStringsW(env_ptr);
+        var i: usize = 0;
+        while (true) {
+            // Find end of current entry (NUL).
+            var j: usize = i;
+            while (env_ptr[j] != 0) : (j += 1) {}
+            if (j == i) break; // double-NUL terminator
+            const entry = env_ptr[i..j];
+
+            // Find name = entry up to first '='.
+            var eq: usize = 0;
+            while (eq < entry.len and entry[eq] != '=') : (eq += 1) {}
+
+            // Convert name to UTF-8 (bounded; env names are short ASCII
+            // in practice) for case-insensitive comparison.
+            var name_utf8_buf: [256]u8 = undefined;
+            const name_wide = entry[0..eq];
+            const name_len = std.unicode.utf16LeToUtf8(&name_utf8_buf, name_wide) catch {
+                i = j + 1;
+                continue;
+            };
+            const name_utf8 = name_utf8_buf[0..name_len];
+
+            const overridden = blk: {
+                for (overlay_names.items) |n| {
+                    if (asciiEqlIgnoreCase(n, name_utf8)) break :blk true;
+                }
+                break :blk false;
+            };
+            if (!overridden) {
+                try out.appendSlice(allocator, entry);
+                try out.append(allocator, 0);
+            }
+            i = j + 1;
+        }
+    }
+
+    try out.append(allocator, 0); // final double-NUL terminator
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendUtf8AsWide(out: *std.ArrayList(u16), allocator: std.mem.Allocator, s: []const u8) !void {
+    // Worst-case: each UTF-8 byte produces one u16 (pure ASCII), or up to
+    // two u16 for surrogate pairs. Allocate generously, then trim.
+    var tmp: [1024]u16 = undefined;
+    if (s.len <= tmp.len) {
+        const n = try std.unicode.utf8ToUtf16Le(&tmp, s);
+        try out.appendSlice(allocator, tmp[0..n]);
+        return;
+    }
+    var heap = try allocator.alloc(u16, s.len * 2);
+    defer allocator.free(heap);
+    const n = try std.unicode.utf8ToUtf16Le(heap, s);
+    try out.appendSlice(allocator, heap[0..n]);
+}
+
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        const xl = if (x >= 'A' and x <= 'Z') x + 32 else x;
+        const yl = if (y >= 'A' and y <= 'Z') y + 32 else y;
+        if (xl != yl) return false;
+    }
+    return true;
+}
+
+/// Spawn a child process inheriting three already-duplicated stdio
+/// handles. The handles must live in the *current* process (the
+/// service) — typically produced by `pipe_windows.duplicateClientStdio`
+/// after `DuplicateHandle`-ing the caller's `GetStdHandle` values into
+/// the daemon.
+///
+/// `cmdline_z` must be a null-terminated UTF-16 command line. The
+/// `exe_wide` path is used as `lpApplicationName`; argv resolution is
+/// the caller's responsibility (the policy layer resolves and rewrites
+/// argv[0] before this point).
+///
+/// `env_block_wide`, when non-null, must be a Windows wide-character
+/// environment block: a sequence of `KEY=VALUE\0` UTF-16 entries
+/// terminated by an extra `\0`. Pass `null` to inherit the daemon's
+/// environment unchanged.
+///
+/// On success the returned `ChildProcess.process` handle is **open and
+/// owned by the caller** — pass it to `waitForExit` or close it
+/// manually.
+///
+/// The three stdio handles are **not** closed by this function.
+/// The caller is expected to close them after `CreateProcessW`
+/// returns (regardless of success), because the kernel duplicates
+/// them into the child as part of the spawn.
+pub fn spawnInheritingStdio(
+    exe_wide: LPCWSTR,
+    cmdline_z: LPWSTR,
+    env_block_wide: LPVOID,
+    stdio: [3]HANDLE,
+) !ChildProcess {
+    // Restrict inheritance to the three stdio handles via
+    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST so the child does not pick up the
+    // daemon's named-pipe handle (or any other inheritable state) that
+    // could outlive the spawn and confuse the IPC loop on disconnect.
+    const attr_size_needed = blk: {
+        var size: usize = 0;
+        _ = InitializeProcThreadAttributeList(null, 1, 0, &size);
+        break :blk size;
+    };
+    const heap = GetProcessHeap();
+    const attr_list = HeapAlloc(heap, 0, attr_size_needed) orelse return error.AttrListAllocFailed;
+    defer _ = HeapFree(heap, 0, attr_list);
+
+    var attr_size_inout: usize = attr_size_needed;
+    if (InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size_inout) == 0) {
+        return error.InitializeAttrListFailed;
+    }
+    defer DeleteProcThreadAttributeList(attr_list);
+
+    var inherit_handles = stdio;
+    if (UpdateProcThreadAttribute(
+        attr_list,
+        0,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        @ptrCast(&inherit_handles),
+        @sizeOf(@TypeOf(inherit_handles)),
+        null,
+        null,
+    ) == 0) {
+        return error.UpdateAttrListFailed;
+    }
+
+    var si_ex = STARTUPINFOEXW{
+        .StartupInfo = .{
+            .cb = @sizeOf(STARTUPINFOEXW),
+            .lpReserved = null,
+            .lpDesktop = null,
+            .lpTitle = null,
+            .dwX = 0,
+            .dwY = 0,
+            .dwXSize = 0,
+            .dwYSize = 0,
+            .dwXCountChars = 0,
+            .dwYCountChars = 0,
+            .dwFillAttribute = 0,
+            .dwFlags = STARTF_USESTDHANDLES,
+            .wShowWindow = 0,
+            .cbReserved2 = 0,
+            .lpReserved2 = null,
+            .hStdInput = stdio[0],
+            .hStdOutput = stdio[1],
+            .hStdError = stdio[2],
+        },
+        .lpAttributeList = attr_list,
+    };
+
+    var pi = std.mem.zeroes(PROCESS_INFORMATION);
+
+    const env_flag: DWORD = if (env_block_wide != null) CREATE_UNICODE_ENVIRONMENT else 0;
+    const flags: DWORD = env_flag | EXTENDED_STARTUPINFO_PRESENT;
+
+    const ok = CreateProcessW(
+        exe_wide,
+        cmdline_z,
+        null,
+        null,
+        1, // bInheritHandles — required even with HANDLE_LIST attribute
+        flags,
+        env_block_wide,
+        null,
+        @ptrCast(&si_ex),
+        &pi,
+    );
+
+    if (ok == 0) return error.CreateProcessFailed;
+
+    _ = CloseHandle(pi.hThread);
+    return .{ .process = pi.hProcess, .pid = pi.dwProcessId };
+}
+
+/// Wait for a child spawned by `spawnInheritingStdio` to exit, return
+/// its exit code, and close the process handle. Returns the exit code
+/// even when it is non-zero; only infrastructure failures (the wait
+/// itself, or reading the exit code) bubble as errors.
+pub fn waitForExit(child: ChildProcess) !u32 {
+    _ = WaitForSingleObject(child.process, INFINITE);
+    var code: DWORD = 0;
+    if (GetExitCodeProcess(child.process, &code) == 0) {
+        _ = CloseHandle(child.process);
+        return error.GetExitCodeFailed;
+    }
+    _ = CloseHandle(child.process);
+    return code;
+}
+
 test "spawn_windows compiles" {
     // Type-level sanity: forces the externs above through the type
     // checker on cross-compiled Windows builds without invoking them.
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     const _spawn = &spawnDetachedForeground;
     _ = _spawn;
+    const _inherit = &spawnInheritingStdio;
+    _ = _inherit;
+    const _wait = &waitForExit;
+    _ = _wait;
 }

@@ -595,15 +595,23 @@ test "cr bogus does not write anything to stdout" {
 fn pollStatus(allocator: std.mem.Allocator, io: Io, dir: Io.Dir, want_running: bool) !void {
     // The daemon fork returns to the parent before Service.start has bound
     // the socket, so a quick `cr status` right after `cr unlock` can race
-    // and miss the running state. Retry briefly until it agrees with the
-    // expected state.
+    // and miss the running state. Retry until it agrees with the expected
+    // state.
+    //
+    // Generous attempt budget because: (a) each iteration spawns a fresh
+    // `cr status` subprocess which is ~200ms on Windows CI runners, and
+    // (b) the daemon's Argon2id key derivation (t=3 m=65536KB p=4) plus
+    // service startup can easily take 5-10s on a slow GitHub Actions
+    // windows-latest runner before the named pipe is bound and `cr
+    // status` can connect.
+    const max_attempts: usize = 200;
     var attempts: usize = 0;
-    while (attempts < 30) : (attempts += 1) {
+    while (attempts < max_attempts) : (attempts += 1) {
         var res = try runCr(allocator, io, dir, &.{"status"}, "");
         defer res.deinit(allocator);
         const says_running = std.mem.indexOf(u8, res.stdout, "status: running") != null;
         if (says_running == want_running) return;
-        io.sleep(.{ .nanoseconds = 50 * std.time.ns_per_ms }, .awake) catch {};
+        io.sleep(.{ .nanoseconds = 100 * std.time.ns_per_ms }, .awake) catch {};
     }
     return error.StatusPollTimedOut;
 }
@@ -751,6 +759,162 @@ test "cr exec rejects spawn target outside task allowed_targets (POSIX-only)" {
         // Whatever the precise error name the client prints, it must NOT
         // be the literal expected-value (i.e. nothing got injected and
         // printed).
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "expected-value") == null);
+        try std.testing.expect(std.mem.indexOf(u8, r.stderr, "exec failed") != null);
+    }
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"lock"}, "");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        lock_done = true;
+    }
+    try pollStatus(allocator, io, tmp.dir, false);
+}
+
+test "cr exec attaches caller stdio so child output is captured (Windows-only)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", opts.cr_bin_path }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "add", "demo", "MY_VAR" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "MY_VAR" }, pass_line ++ "expected-value\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"unlock"}, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    try pollStatus(allocator, io, tmp.dir, true);
+
+    var lock_done = false;
+    defer if (!lock_done) {
+        if (runCr(allocator, io, tmp.dir, &.{"lock"}, "")) |r| {
+            var owned = r;
+            owned.deinit(allocator);
+        } else |_| {}
+    };
+
+    {
+        var r = try runCr(
+            allocator,
+            io,
+            tmp.dir,
+            &.{ "exec", "demo", "--", "C:\\Windows\\System32\\cmd.exe", "/c", "echo MY_VAR=%MY_VAR%" },
+            "",
+        );
+        defer r.deinit(allocator);
+        if (!r.exitOk()) {
+            std.debug.print("[WIN-DBG cr exec stdio] term={any}\nstdout=<<<{s}>>>\nstderr=<<<{s}>>>\n", .{ r.term, r.stdout, r.stderr });
+        }
+        try std.testing.expect(r.exitOk());
+        // Critical assertion: child stdout reaches the cr exec caller's
+        // stdout (DuplicateHandle path landed). Pre-Windows-parity this
+        // was always empty because the daemon's NUL stdio was inherited.
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "MY_VAR=expected-value") != null);
+    }
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"lock"}, "");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        lock_done = true;
+    }
+    try pollStatus(allocator, io, tmp.dir, false);
+}
+
+test "cr exec rejects spawn target outside task allowed_targets (Windows-only)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "allow", opts.cr_bin_path }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        // Allow only where.exe as the spawn target. cmd.exe (the
+        // canonical Windows leak vector via `cmd /c echo %MY_VAR%`)
+        // must be rejected even though the caller cr is whitelisted.
+        var r = try runCr(allocator, io, tmp.dir, &.{ "policy", "task", "add", "guarded", "--target", "C:\\Windows\\System32\\where.exe", "MY_VAR" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "MY_VAR" }, pass_line ++ "expected-value\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{"unlock"}, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+    try pollStatus(allocator, io, tmp.dir, true);
+
+    var lock_done = false;
+    defer if (!lock_done) {
+        if (runCr(allocator, io, tmp.dir, &.{"lock"}, "")) |r| {
+            var owned = r;
+            owned.deinit(allocator);
+        } else |_| {}
+    };
+
+    // Positive: where.exe is whitelisted → spawn allowed.
+    {
+        var r = try runCr(
+            allocator,
+            io,
+            tmp.dir,
+            &.{ "exec", "guarded", "--", "C:\\Windows\\System32\\where.exe", "cmd" },
+            "",
+        );
+        defer r.deinit(allocator);
+        if (!r.exitOk()) {
+            std.debug.print("[WIN-DBG cr exec target] term={any}\nstdout=<<<{s}>>>\nstderr=<<<{s}>>>\n", .{ r.term, r.stdout, r.stderr });
+        }
+        try std.testing.expect(r.exitOk());
+    }
+
+    // Negative: cmd.exe is NOT in allowed_targets. Service must reject
+    // the spawn before injecting MY_VAR, so the secret never reaches the
+    // child env and never lands on the caller's stdout.
+    {
+        var r = try runCr(
+            allocator,
+            io,
+            tmp.dir,
+            &.{ "exec", "guarded", "--", "C:\\Windows\\System32\\cmd.exe", "/c", "echo leaked=%MY_VAR%" },
+            "",
+        );
+        defer r.deinit(allocator);
+        try std.testing.expect(!r.exitOk());
         try std.testing.expect(std.mem.indexOf(u8, r.stdout, "expected-value") == null);
         try std.testing.expect(std.mem.indexOf(u8, r.stderr, "exec failed") != null);
     }

@@ -48,7 +48,7 @@ fn write(io: Io, ch: Channel, text: []const u8) void {
 /// Implementation mirrors the `write` helper above: format into a stack
 /// buffer, then call `writeStreamingAll` on `Io.File.stdout()`. This is
 /// the same code path the help-text writes already use, so behavior is
-/// uniform across POSIX and the Windows preview build. The
+/// uniform across all supported platforms. The
 /// `writerStreaming`/`interface.print`/`flush` triplet was tried first
 /// but appeared to drop output on Windows when the child's stdout was a
 /// pipe (CI regression on PR #25), so we stay with the proven path.
@@ -139,13 +139,13 @@ const unlock_text =
     \\  --foreground                         Stay in foreground (do not daemonize)
     \\
     \\Prompts for the passphrase, decrypts the secrets block into memory,
-    \\and listens on the per-user UDS for IPC requests. By default the
-    \\process daemonizes (fork + setsid + redirect stdio). With
-    \\`--foreground`, it stays attached to the terminal — useful for
-    \\debugging or running under a supervisor.
-    \\
-    \\On Windows, `--foreground` is implicit (background mode not yet
-    \\supported in the Tier-1 preview).
+    \\and listens on the per-user IPC endpoint for requests. By default
+    \\the process daemonizes:
+    \\  POSIX:   fork + setsid + redirect stdio to /dev/null
+    \\  Windows: re-execs itself with `--foreground` via CreateProcessW
+    \\           and DETACHED_PROCESS, piping the passphrase in once.
+    \\With `--foreground`, the process stays attached to the terminal —
+    \\useful for debugging or running under a supervisor.
     \\
 ;
 
@@ -182,9 +182,9 @@ const status_text =
     \\  cr status
     \\
     \\Prints whether the service is running, the number of secrets held in
-    \\memory, and the idle-timeout remaining. On Windows the output also
-    \\includes a `mode: windows-preview` line acknowledging the degraded
-    \\trust model (see SECURITY.md).
+    \\memory, and the idle-timeout remaining. Output is uniform across
+    \\macOS, Linux, and Windows — see SECURITY.md for the per-OS trust
+    \\model.
     \\
 ;
 
@@ -304,7 +304,7 @@ const verify_text =
     \\the given pid:
     \\  Linux:   readlink /proc/<pid>/exe
     \\  macOS:   proc_pidpath(pid, ...)
-    \\  Windows: QueryFullProcessImageNameW (own pid only in Tier 1)
+    \\  Windows: QueryFullProcessImageNameW(OpenProcess(pid))
     \\
 ;
 

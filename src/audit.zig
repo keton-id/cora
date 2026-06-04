@@ -188,7 +188,18 @@ pub fn encode(ev: Event, w: *Io.Writer) !void {
 }
 
 pub fn defaultPathAlloc(allocator: std.mem.Allocator) ![]u8 {
-    const home_ptr = std.c.getenv("HOME") orelse return CoraError.InvalidConfig;
+    // POSIX: $HOME. Windows: $USERPROFILE first (the standard "home"
+    // location), then $HOME as a fallback for Git-Bash / Cygwin shells
+    // that explicitly set it. Without this fallback the daemon failed
+    // to start on bare cmd.exe / PowerShell sessions where HOME isn't
+    // exported (e.g. GitHub Actions windows-latest runners).
+    const home_ptr = blk: {
+        if (@import("builtin").os.tag == .windows) {
+            if (std.c.getenv("USERPROFILE")) |p| break :blk p;
+        }
+        if (std.c.getenv("HOME")) |p| break :blk p;
+        return CoraError.InvalidConfig;
+    };
     const home = std.mem.span(home_ptr);
     return std.fmt.allocPrint(allocator, "{s}/{s}/{s}", .{ home, default_subdir, default_filename });
 }
