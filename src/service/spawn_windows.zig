@@ -149,6 +149,9 @@ extern "kernel32" fn HeapAlloc(hHeap: HANDLE, dwFlags: DWORD, dwBytes: usize) ca
 extern "kernel32" fn HeapFree(hHeap: HANDLE, dwFlags: DWORD, lpMem: LPVOID) callconv(.winapi) BOOL;
 extern "kernel32" fn GetProcessHeap() callconv(.winapi) HANDLE;
 
+extern "kernel32" fn GetEnvironmentStringsW() callconv(.winapi) ?[*]u16;
+extern "kernel32" fn FreeEnvironmentStringsW(penv: [*]u16) callconv(.winapi) BOOL;
+
 extern "kernel32" fn WaitForSingleObject(
     hHandle: HANDLE,
     dwMilliseconds: DWORD,
@@ -402,35 +405,99 @@ pub fn buildCommandLineWide(
 pub const EnvPair = struct { name: []const u8, value: []const u8 };
 
 /// Build a Windows-style UTF-16 environment block (`KEY=VAL\0KEY=VAL\0\0`)
-/// from a flat list of (name, value) pairs. Caller owns the returned
-/// slice and is responsible for `secureZero`-ing it once the spawn is
-/// done — the block carries secret values verbatim.
+/// that inherits the daemon's environment as a base and overlays the
+/// caller-supplied pairs on top (overrides by name match,
+/// case-insensitive per Windows convention). Inheriting is required so
+/// the spawned child can find `SystemRoot`, `PATH`, `PATHEXT` etc — bare
+/// `cmd.exe /c …` fails immediately without `SystemRoot` set. Caller
+/// owns the returned slice and is responsible for `secureZero`-ing it
+/// once the spawn is done because the block carries the overlay
+/// secrets verbatim.
 pub fn buildEnvBlockWide(
     allocator: std.mem.Allocator,
     pairs: []const EnvPair,
 ) ![]u16 {
-    var utf8 = std.ArrayList(u8).empty;
-    defer utf8.deinit(allocator);
-    for (pairs) |p| {
-        try utf8.appendSlice(allocator, p.name);
-        try utf8.append(allocator, '=');
-        try utf8.appendSlice(allocator, p.value);
-        try utf8.append(allocator, 0);
-    }
-    try utf8.append(allocator, 0); // double NUL terminator
+    var out = std.ArrayList(u16).empty;
+    errdefer out.deinit(allocator);
 
-    var wide: []u16 = try allocator.alloc(u16, utf8.items.len);
-    errdefer allocator.free(wide);
-    const n = try std.unicode.utf8ToUtf16Le(wide, utf8.items);
-    if (n != utf8.items.len) {
-        // utf8ToUtf16Le returns the count of u16s; for our pure-ASCII
-        // env vars this matches the input length. If a value contained
-        // multi-byte UTF-8 we'd need to resize — env block expects the
-        // exact count, no trailing slop.
-        const resized = try allocator.realloc(wide, n);
-        wide = resized;
+    // Emit overlay pairs first and record their names so we can skip
+    // the inherited entries that they shadow.
+    var overlay_names = std.ArrayList([]const u8).empty;
+    defer overlay_names.deinit(allocator);
+    for (pairs) |p| {
+        try appendUtf8AsWide(&out, allocator, p.name);
+        try out.append(allocator, '=');
+        try appendUtf8AsWide(&out, allocator, p.value);
+        try out.append(allocator, 0);
+        try overlay_names.append(allocator, p.name);
     }
-    return wide;
+
+    // Inherit daemon env, skipping anything overridden by `pairs`.
+    if (GetEnvironmentStringsW()) |env_ptr| {
+        defer _ = FreeEnvironmentStringsW(env_ptr);
+        var i: usize = 0;
+        while (true) {
+            // Find end of current entry (NUL).
+            var j: usize = i;
+            while (env_ptr[j] != 0) : (j += 1) {}
+            if (j == i) break; // double-NUL terminator
+            const entry = env_ptr[i..j];
+
+            // Find name = entry up to first '='.
+            var eq: usize = 0;
+            while (eq < entry.len and entry[eq] != '=') : (eq += 1) {}
+
+            // Convert name to UTF-8 (bounded; env names are short ASCII
+            // in practice) for case-insensitive comparison.
+            var name_utf8_buf: [256]u8 = undefined;
+            const name_wide = entry[0..eq];
+            const name_len = std.unicode.utf16LeToUtf8(&name_utf8_buf, name_wide) catch {
+                i = j + 1;
+                continue;
+            };
+            const name_utf8 = name_utf8_buf[0..name_len];
+
+            const overridden = blk: {
+                for (overlay_names.items) |n| {
+                    if (asciiEqlIgnoreCase(n, name_utf8)) break :blk true;
+                }
+                break :blk false;
+            };
+            if (!overridden) {
+                try out.appendSlice(allocator, entry);
+                try out.append(allocator, 0);
+            }
+            i = j + 1;
+        }
+    }
+
+    try out.append(allocator, 0); // final double-NUL terminator
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendUtf8AsWide(out: *std.ArrayList(u16), allocator: std.mem.Allocator, s: []const u8) !void {
+    // Worst-case: each UTF-8 byte produces one u16 (pure ASCII), or up to
+    // two u16 for surrogate pairs. Allocate generously, then trim.
+    var tmp: [1024]u16 = undefined;
+    if (s.len <= tmp.len) {
+        const n = try std.unicode.utf8ToUtf16Le(&tmp, s);
+        try out.appendSlice(allocator, tmp[0..n]);
+        return;
+    }
+    var heap = try allocator.alloc(u16, s.len * 2);
+    defer allocator.free(heap);
+    const n = try std.unicode.utf8ToUtf16Le(heap, s);
+    try out.appendSlice(allocator, heap[0..n]);
+}
+
+fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |x, y| {
+        const xl = if (x >= 'A' and x <= 'Z') x + 32 else x;
+        const yl = if (y >= 'A' and y <= 'Z') y + 32 else y;
+        if (xl != yl) return false;
+    }
+    return true;
 }
 
 /// Spawn a child process inheriting three already-duplicated stdio
