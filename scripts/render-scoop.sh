@@ -13,8 +13,8 @@
 #
 # The two Windows artifacts MUST already exist with their .sha256 siblings
 # under <dist-dir>:
-#   cr-<version>-x86_64-windows-preview.zip(.sha256)
-#   cr-<version>-aarch64-windows-preview.zip(.sha256)
+#   cr-<version>-x86_64-windows.zip(.sha256)
+#   cr-<version>-aarch64-windows.zip(.sha256)
 
 set -euo pipefail
 
@@ -41,8 +41,8 @@ sha() {
   awk '{print $1}' "$sha_file"
 }
 
-SHA_X86_64=$(sha "cr-${VERSION}-x86_64-windows-preview.zip")
-SHA_ARM64=$(sha "cr-${VERSION}-aarch64-windows-preview.zip")
+SHA_X86_64=$(sha "cr-${VERSION}-x86_64-windows.zip")
+SHA_ARM64=$(sha "cr-${VERSION}-aarch64-windows.zip")
 
 cat <<EOF
 {
@@ -52,12 +52,12 @@ cat <<EOF
   "license": "AGPL-3.0-only",
   "architecture": {
     "64bit": {
-      "url": "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-x86_64-windows-preview.zip",
+      "url": "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-x86_64-windows.zip",
       "hash": "${SHA_X86_64}",
       "bin": "cr.exe"
     },
     "arm64": {
-      "url": "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-aarch64-windows-preview.zip",
+      "url": "https://github.com/keton-id/cora/releases/download/v${VERSION}/cr-${VERSION}-aarch64-windows.zip",
       "hash": "${SHA_ARM64}",
       "bin": "cr.exe"
     }
@@ -66,10 +66,10 @@ cat <<EOF
   "autoupdate": {
     "architecture": {
       "64bit": {
-        "url": "https://github.com/keton-id/cora/releases/download/v\$version/cr-\$version-x86_64-windows-preview.zip"
+        "url": "https://github.com/keton-id/cora/releases/download/v\$version/cr-\$version-x86_64-windows.zip"
       },
       "arm64": {
-        "url": "https://github.com/keton-id/cora/releases/download/v\$version/cr-\$version-aarch64-windows-preview.zip"
+        "url": "https://github.com/keton-id/cora/releases/download/v\$version/cr-\$version-aarch64-windows.zip"
       }
     }
   }
