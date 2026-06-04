@@ -35,6 +35,11 @@ pub const HANDLE_FLAG_INHERIT: DWORD = 0x00000001;
 pub const DETACHED_PROCESS: DWORD = 0x00000008;
 pub const CREATE_NEW_PROCESS_GROUP: DWORD = 0x00000200;
 pub const CREATE_UNICODE_ENVIRONMENT: DWORD = 0x00000400;
+pub const EXTENDED_STARTUPINFO_PRESENT: DWORD = 0x00080000;
+
+// PROC_THREAD_ATTRIBUTE_HANDLE_LIST = ProcThreadAttributeValue(2, 0, 1, 0)
+// = (2 & 0xFFFF) | (1 << 18) = 0x20002
+pub const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x00020002;
 
 // SECURITY_ATTRIBUTES with bInheritHandle=1 used to make the read
 // pipe handle inheritable by the child.
@@ -63,6 +68,11 @@ const STARTUPINFOW = extern struct {
     hStdInput: ?HANDLE,
     hStdOutput: ?HANDLE,
     hStdError: ?HANDLE,
+};
+
+const STARTUPINFOEXW = extern struct {
+    StartupInfo: STARTUPINFOW,
+    lpAttributeList: LPVOID,
 };
 
 const PROCESS_INFORMATION = extern struct {
@@ -115,6 +125,29 @@ extern "kernel32" fn GetModuleFileNameW(
 ) callconv(.winapi) DWORD;
 
 extern "kernel32" fn GetCommandLineW() callconv(.winapi) LPWSTR;
+
+extern "kernel32" fn InitializeProcThreadAttributeList(
+    lpAttributeList: LPVOID,
+    dwAttributeCount: DWORD,
+    dwFlags: DWORD,
+    lpSize: *usize,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn UpdateProcThreadAttribute(
+    lpAttributeList: LPVOID,
+    dwFlags: DWORD,
+    Attribute: usize,
+    lpValue: LPVOID,
+    cbSize: usize,
+    lpPreviousValue: LPVOID,
+    lpReturnSize: ?*usize,
+) callconv(.winapi) BOOL;
+
+extern "kernel32" fn DeleteProcThreadAttributeList(lpAttributeList: LPVOID) callconv(.winapi) void;
+
+extern "kernel32" fn HeapAlloc(hHeap: HANDLE, dwFlags: DWORD, dwBytes: usize) callconv(.winapi) LPVOID;
+extern "kernel32" fn HeapFree(hHeap: HANDLE, dwFlags: DWORD, lpMem: LPVOID) callconv(.winapi) BOOL;
+extern "kernel32" fn GetProcessHeap() callconv(.winapi) HANDLE;
 
 extern "kernel32" fn WaitForSingleObject(
     hHandle: HANDLE,
@@ -199,25 +232,74 @@ pub fn spawnDetachedForeground(
         return error.SetHandleInformationFailed;
     }
 
-    var si = STARTUPINFOW{
-        .cb = @sizeOf(STARTUPINFOW),
-        .lpReserved = null,
-        .lpDesktop = null,
-        .lpTitle = null,
-        .dwX = 0,
-        .dwY = 0,
-        .dwXSize = 0,
-        .dwYSize = 0,
-        .dwXCountChars = 0,
-        .dwYCountChars = 0,
-        .dwFillAttribute = 0,
-        .dwFlags = STARTF_USESTDHANDLES,
-        .wShowWindow = 0,
-        .cbReserved2 = 0,
-        .lpReserved2 = null,
-        .hStdInput = read_h,
-        .hStdOutput = null,
-        .hStdError = null,
+    // Restrict handle inheritance to ONLY the pipe read end via
+    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST. Without this, bInheritHandles=TRUE
+    // would pass every inheritable handle in the parent process to the
+    // grandchild — including any stdout/stderr pipes that the process
+    // spawning cr.exe set up. The detached daemon would then hold those
+    // pipe write ends for its entire lifetime (default idle timeout 15min),
+    // preventing the spawning process from observing EOF on the parent
+    // cr.exe's stdout. That blocked `cr unlock` calls made from any
+    // pipe-capturing parent (CI test runner, supervisor, …) for the full
+    // idle window before returning.
+    const attr_size_needed = blk: {
+        var size: usize = 0;
+        _ = InitializeProcThreadAttributeList(null, 1, 0, &size);
+        break :blk size;
+    };
+    const heap = GetProcessHeap();
+    const attr_list = HeapAlloc(heap, 0, attr_size_needed) orelse {
+        _ = CloseHandle(read_h);
+        _ = CloseHandle(write_h);
+        return error.AttrListAllocFailed;
+    };
+    defer _ = HeapFree(heap, 0, attr_list);
+
+    var attr_size_inout: usize = attr_size_needed;
+    if (InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size_inout) == 0) {
+        _ = CloseHandle(read_h);
+        _ = CloseHandle(write_h);
+        return error.InitializeAttrListFailed;
+    }
+    defer DeleteProcThreadAttributeList(attr_list);
+
+    var inherit_handles = [_]HANDLE{read_h};
+    if (UpdateProcThreadAttribute(
+        attr_list,
+        0,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        @ptrCast(&inherit_handles),
+        @sizeOf(@TypeOf(inherit_handles)),
+        null,
+        null,
+    ) == 0) {
+        _ = CloseHandle(read_h);
+        _ = CloseHandle(write_h);
+        return error.UpdateAttrListFailed;
+    }
+
+    var si_ex = STARTUPINFOEXW{
+        .StartupInfo = .{
+            .cb = @sizeOf(STARTUPINFOEXW),
+            .lpReserved = null,
+            .lpDesktop = null,
+            .lpTitle = null,
+            .dwX = 0,
+            .dwY = 0,
+            .dwXSize = 0,
+            .dwYSize = 0,
+            .dwXCountChars = 0,
+            .dwYCountChars = 0,
+            .dwFillAttribute = 0,
+            .dwFlags = STARTF_USESTDHANDLES,
+            .wShowWindow = 0,
+            .cbReserved2 = 0,
+            .lpReserved2 = null,
+            .hStdInput = read_h,
+            .hStdOutput = null,
+            .hStdError = null,
+        },
+        .lpAttributeList = attr_list,
     };
 
     var pi = std.mem.zeroes(PROCESS_INFORMATION);
@@ -227,11 +309,11 @@ pub fn spawnDetachedForeground(
         @ptrCast(cmdline.ptr),
         null,
         null,
-        1, // bInheritHandles — required for the stdin pipe to cross
-        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+        1, // bInheritHandles — required even with HANDLE_LIST attribute
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | EXTENDED_STARTUPINFO_PRESENT,
         null,
         null,
-        &si,
+        @ptrCast(&si_ex),
         &pi,
     );
 
@@ -381,41 +463,77 @@ pub fn spawnInheritingStdio(
     env_block_wide: LPVOID,
     stdio: [3]HANDLE,
 ) !ChildProcess {
-    var si = STARTUPINFOW{
-        .cb = @sizeOf(STARTUPINFOW),
-        .lpReserved = null,
-        .lpDesktop = null,
-        .lpTitle = null,
-        .dwX = 0,
-        .dwY = 0,
-        .dwXSize = 0,
-        .dwYSize = 0,
-        .dwXCountChars = 0,
-        .dwYCountChars = 0,
-        .dwFillAttribute = 0,
-        .dwFlags = STARTF_USESTDHANDLES,
-        .wShowWindow = 0,
-        .cbReserved2 = 0,
-        .lpReserved2 = null,
-        .hStdInput = stdio[0],
-        .hStdOutput = stdio[1],
-        .hStdError = stdio[2],
+    // Restrict inheritance to the three stdio handles via
+    // PROC_THREAD_ATTRIBUTE_HANDLE_LIST so the child does not pick up the
+    // daemon's named-pipe handle (or any other inheritable state) that
+    // could outlive the spawn and confuse the IPC loop on disconnect.
+    const attr_size_needed = blk: {
+        var size: usize = 0;
+        _ = InitializeProcThreadAttributeList(null, 1, 0, &size);
+        break :blk size;
+    };
+    const heap = GetProcessHeap();
+    const attr_list = HeapAlloc(heap, 0, attr_size_needed) orelse return error.AttrListAllocFailed;
+    defer _ = HeapFree(heap, 0, attr_list);
+
+    var attr_size_inout: usize = attr_size_needed;
+    if (InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size_inout) == 0) {
+        return error.InitializeAttrListFailed;
+    }
+    defer DeleteProcThreadAttributeList(attr_list);
+
+    var inherit_handles = stdio;
+    if (UpdateProcThreadAttribute(
+        attr_list,
+        0,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        @ptrCast(&inherit_handles),
+        @sizeOf(@TypeOf(inherit_handles)),
+        null,
+        null,
+    ) == 0) {
+        return error.UpdateAttrListFailed;
+    }
+
+    var si_ex = STARTUPINFOEXW{
+        .StartupInfo = .{
+            .cb = @sizeOf(STARTUPINFOEXW),
+            .lpReserved = null,
+            .lpDesktop = null,
+            .lpTitle = null,
+            .dwX = 0,
+            .dwY = 0,
+            .dwXSize = 0,
+            .dwYSize = 0,
+            .dwXCountChars = 0,
+            .dwYCountChars = 0,
+            .dwFillAttribute = 0,
+            .dwFlags = STARTF_USESTDHANDLES,
+            .wShowWindow = 0,
+            .cbReserved2 = 0,
+            .lpReserved2 = null,
+            .hStdInput = stdio[0],
+            .hStdOutput = stdio[1],
+            .hStdError = stdio[2],
+        },
+        .lpAttributeList = attr_list,
     };
 
     var pi = std.mem.zeroes(PROCESS_INFORMATION);
 
-    const flags: DWORD = if (env_block_wide != null) CREATE_UNICODE_ENVIRONMENT else 0;
+    const env_flag: DWORD = if (env_block_wide != null) CREATE_UNICODE_ENVIRONMENT else 0;
+    const flags: DWORD = env_flag | EXTENDED_STARTUPINFO_PRESENT;
 
     const ok = CreateProcessW(
         exe_wide,
         cmdline_z,
         null,
         null,
-        1, // bInheritHandles — required for the stdio handles to cross
+        1, // bInheritHandles — required even with HANDLE_LIST attribute
         flags,
         env_block_wide,
         null,
-        &si,
+        @ptrCast(&si_ex),
         &pi,
     );
 
