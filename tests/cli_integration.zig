@@ -823,6 +823,9 @@ test "cr exec attaches caller stdio so child output is captured (Windows-only)" 
             "",
         );
         defer r.deinit(allocator);
+        if (!r.exitOk()) {
+            std.debug.print("[WIN-DBG cr exec stdio] term={any}\nstdout=<<<{s}>>>\nstderr=<<<{s}>>>\n", .{ r.term, r.stdout, r.stderr });
+        }
         try std.testing.expect(r.exitOk());
         // Critical assertion: child stdout reaches the cr exec caller's
         // stdout (DuplicateHandle path landed). Pre-Windows-parity this
@@ -893,6 +896,9 @@ test "cr exec rejects spawn target outside task allowed_targets (Windows-only)" 
             "",
         );
         defer r.deinit(allocator);
+        if (!r.exitOk()) {
+            std.debug.print("[WIN-DBG cr exec target] term={any}\nstdout=<<<{s}>>>\nstderr=<<<{s}>>>\n", .{ r.term, r.stdout, r.stderr });
+        }
         try std.testing.expect(r.exitOk());
     }
 
