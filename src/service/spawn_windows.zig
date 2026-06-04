@@ -351,9 +351,18 @@ pub fn spawnDetachedForeground(
 /// Quote a single argv entry per the Windows command-line rules
 /// (MSDN "Parsing C++ Command-Line Arguments"). Backslashes and the
 /// quote character itself are doubled only when they precede a quote;
-/// otherwise they are passed through. Always wraps the result in
-/// double quotes so embedded whitespace stays a single token.
+/// otherwise they are passed through. Quotes are only added when the
+/// arg is empty or contains a character that the receiver's
+/// `CommandLineToArgvW` would treat as a separator — leaving simple
+/// switches like `/c` unquoted is important because `cmd.exe` does its
+/// own raw-cmdline parsing for the rest after `/c` and does not
+/// understand a quoted `"/c"` as the switch.
 fn appendQuotedArg(out: *std.ArrayList(u8), allocator: std.mem.Allocator, arg: []const u8) !void {
+    const needs_quotes = arg.len == 0 or std.mem.indexOfAny(u8, arg, " \t\n\x0B\"") != null;
+    if (!needs_quotes) {
+        try out.appendSlice(allocator, arg);
+        return;
+    }
     try out.append(allocator, '"');
     var i: usize = 0;
     while (i < arg.len) {
