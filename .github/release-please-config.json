@@ -14,7 +14,7 @@
       "draft": true,
       "force-tag-creation": true,
       "prerelease": false,
-      "changelog-path": "CHANGELOG-macos.md",
+      "changelog-path": "CHANGELOG.md",
       "include-paths": [
         "components/macos",
         "src/identity/macos.zig",
@@ -67,7 +67,7 @@
       "draft": true,
       "force-tag-creation": true,
       "prerelease": false,
-      "changelog-path": "CHANGELOG-linux.md",
+      "changelog-path": "CHANGELOG.md",
       "include-paths": [
         "components/linux",
         "src/identity/linux.zig",
@@ -120,7 +120,7 @@
       "draft": true,
       "force-tag-creation": true,
       "prerelease": false,
-      "changelog-path": "CHANGELOG-windows.md",
+      "changelog-path": "CHANGELOG.md",
       "include-paths": [
         "components/windows",
         "src/identity/windows.zig",

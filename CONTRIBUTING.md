@@ -234,7 +234,8 @@ understand how your commits land.
 3. `release-please` opens (or updates) **one** PR titled
    `chore(main): release …` that collapses every bumped component.
    It edits `.versions.json` (only the affected OS fields) and the
-   matching `CHANGELOG-{os}.md`.
+   unified `CHANGELOG.md` (one file, per-OS sections interleaved by
+   date so all three streams stay visible in one place).
 4. A maintainer merges that PR. `release-please` then creates between
    one and three tags: `cora-macos-v…`, `cora-linux-v…`,
    `cora-windows-v…`.

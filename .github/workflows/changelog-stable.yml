@@ -53,7 +53,11 @@ jobs:
             | grep -v "^${TAG}$" \
             | head -1 || true)
 
-          CHANGELOG_FILE="CHANGELOG-${OS}.md"
+          # All three OS components share a single CHANGELOG.md. The
+          # previous-stable lookup above stays per-OS so generated notes
+          # diff against the right baseline, but the file we write back
+          # into is the unified history.
+          CHANGELOG_FILE="CHANGELOG.md"
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "os=$OS" >> "$GITHUB_OUTPUT"

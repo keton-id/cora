@@ -67,7 +67,8 @@ release-please supports multiple `Release-As:` footers per commit.
 1. **Commit & push** to `main` (directly via merged PR).
 2. **release-please** opens (or updates) **one PR** titled `chore(main): release …` that collapses all bumped components. The PR edits:
    - `.versions.json` (only the bumped OS fields)
-   - the matching `CHANGELOG-{os}.md`
+   - the unified `CHANGELOG.md` (every component shares the same file
+     so all three OS streams are visible at a glance, ordered by date)
    - `.github/release-please-manifest.json`
 3. **Merge the release-please PR.** release-please creates the appropriate tags (one to three of: `cora-macos-v…`, `cora-linux-v…`, `cora-windows-v…`).
 4. **`release.yml`** fires on each new tag:
@@ -79,7 +80,7 @@ release-please supports multiple `Release-As:` footers per commit.
      - `cora-windows-v*` → updates [`keton-id/scoop-bucket`](https://github.com/keton-id/scoop-bucket).
      - `cora-linux-v*` → GitHub release tarballs only (no package-manager publish yet; AUR/snap deferred).
      - All stable tags also publish two npm subpackages (`@keton-id/cora-<platform>-<arch>`) and re-publish the meta `@keton-id/cora` with `optionalDependencies` pinned to the latest per-OS versions from `.versions.json`.
-5. **`changelog-stable.yml`** fires on stable GitHub releases, generates contributor-enriched notes via the GitHub API, and opens a PR updating the matching `CHANGELOG-{os}.md` and the release body.
+5. **`changelog-stable.yml`** fires on stable GitHub releases, generates contributor-enriched notes via the GitHub API, and opens a PR updating `CHANGELOG.md` (the per-OS previous-stable lookup still scopes the generated notes to the right baseline) and the release body.
 
 ## Promoting an alpha to stable
 
