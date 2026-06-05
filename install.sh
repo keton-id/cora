@@ -8,12 +8,19 @@
 #
 # Flags:
 #   --channel <stable|alpha|beta|rc>   default: stable (skip prereleases)
-#   --version <vX.Y.Z[-tag]>           pin to a specific tag
+#   --version <X.Y.Z[-suffix]|tag>     pin to a version (plain X.Y.Z is
+#                                      auto-prefixed with cora-<os>-v) or
+#                                      pass the full tag (e.g. cora-macos-v1.0.0).
 #   --bindir <path>                    default: /usr/local/bin (sudo) or ~/.local/bin
 #   --no-verify                        skip SHA256 verification (NOT recommended)
 #
 # Verifies the downloaded tarball against the per-asset .sha256 file before
 # extracting. Refuses to install if checksum mismatches.
+#
+# Each OS has its own release stream: `cora-macos-v*`, `cora-linux-v*`,
+# `cora-windows-v*`. This script auto-detects the host OS and queries
+# only that stream so a fresh Windows release does not show up as the
+# latest for Linux users (or vice versa).
 
 set -eu
 
@@ -65,21 +72,52 @@ detect_target() {
     printf '%s' "${arch_tag}-${os_tag}"
 }
 
-resolve_version() {
+# Returns the OS slice from a target like `aarch64-macos` -> `macos`.
+target_os() {
+    printf '%s' "${1#*-}"
+}
+
+resolve_tag() {
+    target="$1"
+    os="$(target_os "$target")"
+    prefix="cora-${os}-v"
+
     if [ -n "$PIN_VERSION" ]; then
-        printf '%s' "$PIN_VERSION"
+        case "$PIN_VERSION" in
+            cora-*-v*)
+                # Operator passed a fully-qualified tag; trust it.
+                printf '%s' "$PIN_VERSION"
+                ;;
+            v*)
+                # Legacy bare `vX.Y.Z` — strip the v, re-prefix for the host OS.
+                printf '%s%s' "$prefix" "${PIN_VERSION#v}"
+                ;;
+            *)
+                # Bare semver — prefix for the host OS.
+                printf '%s%s' "$prefix" "$PIN_VERSION"
+                ;;
+        esac
         return
     fi
+
+    # Pull the GitHub release tag stream and filter to this OS's prefix.
+    # `releases/latest` returns the most recent stable across ALL OS
+    # streams, which is wrong for a per-OS install — so we always query
+    # the paginated list and filter ourselves.
+    tags="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
+        | grep -E -- "^${prefix}")"
+
     case "$CHANNEL" in
         stable)
-            curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-                | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
+            # Stable = no dash-suffix after the version.
+            printf '%s' "$tags" \
+                | grep -E -- "^${prefix}[0-9]+\.[0-9]+\.[0-9]+$" \
                 | head -n 1
             ;;
         alpha|beta|rc)
-            curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=20" \
-                | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-                | grep -E -- "-${CHANNEL}\." \
+            printf '%s' "$tags" \
+                | grep -E -- "^${prefix}[0-9]+\.[0-9]+\.[0-9]+-${CHANNEL}\." \
                 | head -n 1
             ;;
         *) echo "unknown channel: $CHANNEL" >&2; exit 1;;
@@ -88,12 +126,14 @@ resolve_version() {
 
 main() {
     target="$(detect_target)"
-    tag="$(resolve_version)"
+    os="$(target_os "$target")"
+    tag="$(resolve_tag "$target")"
     if [ -z "$tag" ]; then
-        echo "could not resolve a release for channel='$CHANNEL'" >&2
+        echo "could not resolve a release for os='${os}' channel='${CHANNEL}'" >&2
         exit 1
     fi
-    version="${tag#v}"
+    # Strip the cora-<os>-v prefix to get the bare semver used in artifact names.
+    version="${tag#cora-${os}-v}"
     artifact="cr-${version}-${target}.tar.gz"
     base_url="https://github.com/${REPO}/releases/download/${tag}"
 
