@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const version = parseVersion(b);
+    const version = parseVersion(b, target);
     const commit = gitCommit(b);
     const build_date = buildDate(b);
 
@@ -81,13 +81,28 @@ pub fn build(b: *std.Build) void {
     fmt_step.dependOn(&fmt.step);
 }
 
-fn parseVersion(b: *std.Build) []const u8 {
-    const zon = @embedFile("build.zig.zon");
-    const key = ".version = \"";
-    const start = std.mem.indexOf(u8, zon, key) orelse return "unknown";
-    const after = zon[start + key.len ..];
-    const end = std.mem.indexOfScalar(u8, after, '"') orelse return "unknown";
-    return b.dupe(after[0..end]);
+fn parseVersion(b: *std.Build, target: std.Build.ResolvedTarget) []const u8 {
+    // `.versions.json` holds the per-OS versions managed by release-please.
+    // Build picks the field matching the target OS so `cr --version` reports
+    // the version of the component that produced this binary.
+    const json = @embedFile(".versions.json");
+    const os_key: []const u8 = switch (target.result.os.tag) {
+        .macos => "macos",
+        .linux => "linux",
+        .windows => "windows",
+        else => return "unknown",
+    };
+
+    // Naive JSON field lookup. The file shape is fixed at three string
+    // fields, so a full parser is overkill — release-please updates the
+    // values in-place via jsonpath, never the shape.
+    const needle = b.fmt("\"{s}\":", .{os_key});
+    const key_pos = std.mem.indexOf(u8, json, needle) orelse return "unknown";
+    const after_key = json[key_pos + needle.len ..];
+    const value_start = std.mem.indexOfScalar(u8, after_key, '"') orelse return "unknown";
+    const after_quote = after_key[value_start + 1 ..];
+    const value_end = std.mem.indexOfScalar(u8, after_quote, '"') orelse return "unknown";
+    return b.dupe(after_quote[0..value_end]);
 }
 
 fn gitCommit(b: *std.Build) []const u8 {
