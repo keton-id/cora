@@ -8,6 +8,13 @@ below are generated automatically by
 [release-please](https://github.com/googleapis/release-please) — do not edit by
 hand.
 
+## [0.9.1-alpha.1](https://github.com/keton-id/cora/compare/v0.9.0-alpha.1...v0.9.1-alpha.1) (2026-06-04)
+
+
+### Bug Fixes
+
+* **ci:** align scoop manifest artifact names with build output ([ee072f2](https://github.com/keton-id/cora/commit/ee072f2840c0238a8f365ce411a53635a038e58e))
+
 ## [0.9.0](https://github.com/keton-id/cora/compare/v0.7.0...v0.9.0) (2026-06-04)
 
 ## What's Changed
