@@ -1,12 +1,11 @@
-# Changelog
+# Changelog (archived, pre-OS-split)
 
-All notable changes to this project are documented here.
-
-This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-and uses [Conventional Commits](https://www.conventionalcommits.org/). Entries
-below are generated automatically by
-[release-please](https://github.com/googleapis/release-please) — do not edit by
-hand.
+> **Frozen.** Starting with `cora-{os}-v*` tags, per-OS changelogs live in:
+> - [`CHANGELOG-macos.md`](./CHANGELOG-macos.md)
+> - [`CHANGELOG-linux.md`](./CHANGELOG-linux.md)
+> - [`CHANGELOG-windows.md`](./CHANGELOG-windows.md)
+>
+> This file preserves the unified history up to and including `v0.9.1-alpha.1`.
 
 ## [0.9.1-alpha.1](https://github.com/keton-id/cora/compare/v0.9.0-alpha.1...v0.9.1-alpha.1) (2026-06-04)
 
