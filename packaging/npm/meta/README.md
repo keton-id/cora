@@ -19,20 +19,25 @@ npx @keton-id/cora --help
 
 ## What's in this package
 
-This npm package bundles the prebuilt `cr` binary for every supported platform and arch:
+This is the **meta** package. It contains:
 
-| platform | arch | tier |
+- a small ESM launcher (`bin/cr.js`)
+- six `optionalDependencies` — one per `<platform>-<arch>` combination
+
+npm reads the `os` and `cpu` fields on each optional dep at install time and silently skips the five that don't match your host, so only the matching prebuilt native `cr` binary lands on disk:
+
+| platform | arch | subpackage |
 | --- | --- | --- |
-| macOS | x64 | Tier 1 |
-| macOS | arm64 | Tier 1 |
-| Linux | x64 | Tier 1 |
-| Linux | arm64 | Tier 1 |
-| Windows | x64 | Tier 1 |
-| Windows | arm64 | Tier 1 |
+| macOS | x64 | `@keton-id/cora-darwin-x64` |
+| macOS | arm64 | `@keton-id/cora-darwin-arm64` |
+| Linux | x64 | `@keton-id/cora-linux-x64` |
+| Linux | arm64 | `@keton-id/cora-linux-arm64` |
+| Windows | x64 | `@keton-id/cora-win32-x64` |
+| Windows | arm64 | `@keton-id/cora-win32-arm64` |
+
+There are no postinstall scripts, no install-time downloads, and no `node_modules` runtime dependencies beyond the resolved subpackage.
 
 Caller-identity verification is kernel-backed on every supported target — `SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS, `GetNamedPipeClientProcessId` on Windows. See [SECURITY.md](https://github.com/keton-id/cora/blob/main/SECURITY.md) for the full trust model.
-
-At runtime, a tiny JS shim (`bin/cr.js`) picks the matching native binary out of the bundled `vendor/` directory. There are no postinstall scripts, no install-time downloads, and no `node_modules` runtime dependencies.
 
 ## Usage
 
@@ -58,13 +63,15 @@ cr help <subcommand> <action> # deep
 
 ## Versioning
 
-Only **stable** releases publish to npm, matching the Homebrew and Scoop channels. Pre-1.0 alphas remain on GitHub Releases only — install them by downloading the tarball/zip directly, or via `cargo install`/`go install`-style scripts against the release URL.
+Each OS (macOS / Linux / Windows) is released on its own cadence under its own tag prefix (`cora-macos-v*`, `cora-linux-v*`, `cora-windows-v*`). The corresponding subpackages on npm are versioned independently. The meta `@keton-id/cora` version tracks the most recent stable across all three, so `npm i -g @keton-id/cora@latest` always pulls the freshest binary for your host.
 
 Pin a specific stable build with `@<version>` to keep an environment reproducible:
 
 ```sh
 npm i -g @keton-id/cora@1.0.0
 ```
+
+Pre-1.0 alphas remain on GitHub Releases only and are not published to npm.
 
 ## License
 

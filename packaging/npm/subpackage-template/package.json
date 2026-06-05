@@ -1,0 +1,30 @@
+{
+  "name": "@keton-id/cora-PLATFORM-ARCH",
+  "version": "0.0.0-template",
+  "description": "Prebuilt cr binary for PLATFORM/ARCH. Consumed via @keton-id/cora.",
+  "bin": {
+    "cr": "bin/cr"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/keton-id/cora.git"
+  },
+  "homepage": "https://cora.keton.id",
+  "bugs": {
+    "url": "https://github.com/keton-id/cora/issues"
+  },
+  "os": [
+    "PLATFORM"
+  ],
+  "cpu": [
+    "ARCH"
+  ]
+}
