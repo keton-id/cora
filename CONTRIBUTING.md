@@ -11,12 +11,17 @@ See [SECURITY.md](SECURITY.md) for the responsible-disclosure channel.
 
 ## Project status
 
-Cora is **pre-alpha** (`0.x`, macOS + Linux, Zig 0.16). Public API and CLI
-surface may change between minor versions until `v1.0.0`. We follow
+Cora is **pre-alpha** (`0.x`, macOS + Linux + Windows, Zig 0.16). Public API
+and CLI surface may change between minor versions until `v1.0.0`. We follow
 [Semantic Versioning](https://semver.org/) and use
 [Conventional Commits](https://www.conventionalcommits.org/) for
 release-please automation — see the
 [Commit conventions](#commit-conventions) section below.
+
+Each OS (macOS, Linux, Windows) is released on its own cadence under its
+own tag prefix (`cora-{os}-v…`). A Windows-only fix does not force a
+macOS or Linux build. Shared code commits intentionally bump all three.
+See [RELEASING.md](RELEASING.md) for the full model.
 
 ---
 
@@ -133,8 +138,10 @@ Scopes are optional but encouraged — they group entries in the changelog.
    Conventional Commit lint on the PR title.
 5. Wait for review. We aim for first response within a few days.
 6. After merge: release-please updates a floating
-   "chore(main): release vX.Y.Z" PR. Maintainers merge that when ready,
-   which tags the release and triggers binary builds.
+   "chore(main): release …" PR covering the OS components your commit
+   bumped (one to three of macOS / Linux / Windows). Maintainers merge
+   that when ready, which tags the per-OS release(s) and triggers the
+   matching OS-scoped builds. See [Releasing](#releasing-maintainers-only).
 
 ### Reviewer expectations
 
@@ -208,22 +215,72 @@ For integration tests that need a tmp directory, use
 
 ## Releasing (maintainers only)
 
-Releases are automated:
+Cora ships as **three independent OS components** — macOS, Linux, Windows.
+Each has its own version, tag, GitHub release, changelog, and (where
+applicable) package-manager distribution. The full operational guide
+lives in [RELEASING.md](RELEASING.md); the summary below is enough to
+understand how your commits land.
 
 1. Conventional Commits land on `main`.
-2. `.github/workflows/release-please.yml` uses the
-   `RELEASE_PLEASE_TOKEN` GitHub Actions secret so release-please can
-   open / update the "chore(main): release vX.Y.Z" PR with
-   `build.zig.zon` and `CHANGELOG.md` bumped.
-3. A maintainer reviews and merges that PR.
-4. The merge tags the release (`vX.Y.Z`), which fires `release.yml`.
-5. `release.yml` cross-compiles `cr` for four targets, attaches tarballs +
-   SHA256 to the GitHub Release, and publishes it.
+2. `release-please` looks at the `include-paths` for each component
+   in [`.github/release-please-config.json`](.github/release-please-config.json)
+   to decide which OS(s) bump:
+   - Touch `src/identity/macos.zig` → only `cora-macos` bumps.
+   - Touch `src/identity/windows.zig`, `src/service/pipe_windows.zig`,
+     or `src/service/spawn_windows.zig` → only `cora-windows` bumps.
+   - Touch `src/identity/linux.zig` → only `cora-linux` bumps.
+   - Touch any shared file (`src/crypto/**`, `src/store/**`,
+     `src/service/service.zig`, `build.zig`, …) → all three bump.
+3. `release-please` opens (or updates) **one** PR titled
+   `chore(main): release …` that collapses every bumped component.
+   It edits `.versions.json` (only the affected OS fields) and the
+   matching `CHANGELOG-{os}.md`.
+4. A maintainer merges that PR. `release-please` then creates between
+   one and three tags: `cora-macos-v…`, `cora-linux-v…`,
+   `cora-windows-v…`.
+5. `release.yml` fires per tag and scopes its build matrix to the OS
+   embedded in the tag prefix — a Windows-only bump never spawns a
+   macOS runner.
+6. Distribution is per-OS: stable `cora-macos-v*` updates Homebrew;
+   stable `cora-windows-v*` updates Scoop; every stable tag publishes
+   the matching npm subpackages and re-publishes the meta
+   `@keton-id/cora`.
 
-For a **pre-release** (alpha / beta / rc) you currently have to override
-release-please's bump manually — edit the version in the floating release
-PR or tag a custom prerelease (`git tag v0.2.0-alpha.1 && git push --tags`)
-and let the release workflow run.
+### Releasing only one OS despite touching shared code
+
+Add a Conventional Commits footer:
+
+```
+fix(crypto): tighten nonce derivation for Windows pipe handshake
+
+Release-As: cora-windows-v0.9.3
+```
+
+`release-please` honors `Release-As:` and skips the other components.
+Document why in the commit body. For a coordinated bump across all
+three OS (e.g. `1.0.0`), use three footers in one commit:
+
+```
+chore: bump to 1.0.0 across all OS
+
+Release-As: cora-macos-v1.0.0
+Release-As: cora-linux-v1.0.0
+Release-As: cora-windows-v1.0.0
+```
+
+### Promoting an alpha to stable
+
+Run the **release** workflow manually with `release_channel=release`
+and `source_tag=cora-<os>-v<X.Y.Z>-alpha.N`. The workflow strips the
+suffix, retags the same commit, and runs the per-OS distribution jobs.
+
+### Per-OS version source of truth
+
+Versions live in [`.versions.json`](./.versions.json) at the repo root,
+one field per OS. `build.zig` reads it at build time and bakes the
+matching version into the binary based on `-Dtarget=...`. The
+`.version` field in `build.zig.zon` is pinned to `0.0.0-dev` and is
+not the source of truth — leave it alone.
 
 ---
 

@@ -18,6 +18,24 @@ Examples:
 
 <!-- e.g. "Closes #123" or "Refs #45". Leave blank if standalone. -->
 
+## OS impact
+
+Cora releases each OS independently (`cora-macos-v*`, `cora-linux-v*`,
+`cora-windows-v*`). Tick the OS(s) this PR affects — release-please
+will bump the corresponding component(s) when this merges.
+
+- [ ] macOS — touches `src/identity/macos.zig` or shared code
+- [ ] Linux — touches `src/identity/linux.zig` or shared code
+- [ ] Windows — touches `src/identity/windows.zig`,
+      `src/service/pipe_windows.zig`, `src/service/spawn_windows.zig`,
+      or shared code
+
+If you touched shared code but want release-please to bump fewer than
+three components, add a `Release-As:` footer in your commit message — e.g.
+`Release-As: cora-windows-v0.9.3`. See [CONTRIBUTING.md → Releasing](../CONTRIBUTING.md#releasing-maintainers-only)
+for the rules. Reviewer: confirm the OS scope above matches the
+files actually changed in the diff before approving.
+
 ## Changes
 
 <!-- Short bullet list of the user-visible changes in this PR. -->
