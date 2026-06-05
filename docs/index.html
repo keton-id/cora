@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>cora — zero-knowledge secret injection for AI agents</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,200;0,300;0,400;0,500;1,300;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    /* warm near-black editorial palette */
+    --bg:        oklch(0.165 0.008 45);
+    --bg-1:      oklch(0.195 0.009 45);
+    --bg-2:      oklch(0.235 0.010 45);
+    --line:      oklch(0.32 0.010 45);
+    --line-soft: oklch(0.26 0.009 45);
+    --ink:       oklch(0.93 0.012 70);
+    --ink-dim:   oklch(0.74 0.012 60);
+    --ink-mute:  oklch(0.56 0.012 55);
+    --ink-faint: oklch(0.42 0.010 50);
+    /* crimson / oxblood accent — Corazón */
+    --blood:     oklch(0.585 0.165 22);
+    --blood-lo:  oklch(0.50 0.150 22);
+    --blood-dim: oklch(0.40 0.090 22);
+    --blood-glow: oklch(0.585 0.165 22 / 0.16);
+
+    --serif: "IBM Plex Serif", Georgia, serif;
+    --sans:  "IBM Plex Sans", system-ui, sans-serif;
+    --mono:  "IBM Plex Mono", ui-monospace, monospace;
+    --drama: "Instrument Serif", "IBM Plex Serif", serif;
+
+    --maxw: 1180px;
+    --pad: clamp(20px, 5vw, 80px);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-weight: 400;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: hidden;
+  }
+  ::selection { background: var(--blood); color: var(--bg); }
+
+  a { color: inherit; text-decoration: none; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding-inline: var(--pad); }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--ink-mute);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.7em;
+  }
+  .eyebrow::before {
+    content: "";
+    width: 22px; height: 1px;
+    background: var(--blood);
+    display: inline-block;
+  }
+
+  h1, h2, h3 { font-family: var(--serif); font-weight: 300; margin: 0; line-height: 1.04; letter-spacing: -0.012em; }
+
+  .drama { font-family: var(--drama); font-weight: 400; font-style: italic; letter-spacing: 0; }
+
+  /* ─── redaction motif ─────────────────────────────── */
+  .redact {
+    background: var(--blood-dim);
+    color: transparent;
+    border-radius: 1px;
+    padding: 0 0.15em;
+    position: relative;
+    user-select: none;
+    box-shadow: 0 0 0 1px oklch(0.40 0.090 22 / 0.4) inset;
+  }
+  .redact.blk { background: oklch(0.30 0.012 45); box-shadow: none; }
+
+  /* ─── nav ─────────────────────────────────────────── */
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    background: oklch(0.165 0.008 45 / 0.78);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid transparent;
+    transition: border-color .3s, background .3s;
+  }
+  nav.scrolled { border-bottom-color: var(--line-soft); }
+  .nav-in {
+    max-width: var(--maxw); margin: 0 auto; padding: 16px var(--pad);
+    display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  }
+  .brand { display: flex; align-items: baseline; gap: 10px; font-family: var(--serif); font-size: 21px; font-weight: 400; letter-spacing: -0.01em; }
+  .brand b { font-weight: 500; }
+  .brand .glyph { color: var(--blood); font-family: var(--mono); font-size: 15px; transform: translateY(-1px); }
+  .nav-links { display: flex; gap: 30px; align-items: center; }
+  .nav-links a { font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.04em; color: var(--ink-dim); transition: color .18s; }
+  .nav-links a:hover { color: var(--ink); }
+  .nav-cta {
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.03em;
+    border: 1px solid var(--line); padding: 8px 15px; border-radius: 2px;
+    color: var(--ink); transition: border-color .18s, background .18s;
+  }
+  .nav-cta:hover { border-color: var(--blood); background: var(--blood-glow); }
+  @media (max-width: 720px) { .nav-links a:not(.nav-cta) { display: none; } }
+
+  /* ─── hero ────────────────────────────────────────── */
+  .hero { padding: clamp(70px, 13vh, 150px) 0 clamp(60px, 9vh, 110px); position: relative; }
+  .hero::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: -1;
+    background: radial-gradient(120% 80% at 78% 0%, var(--blood-glow), transparent 60%);
+  }
+  .hero-grid { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: clamp(40px, 6vw, 90px); align-items: center; }
+  @media (max-width: 880px) { .hero-grid { grid-template-columns: 1fr; gap: 48px; } }
+
+  .hero h1 { font-size: clamp(46px, 7.4vw, 104px); font-weight: 200; margin-top: 26px; }
+  .hero h1 em { font-family: var(--drama); font-style: italic; font-weight: 400; color: var(--blood); }
+  .hero-sub { margin-top: 30px; max-width: 30ch; font-size: clamp(16px, 1.5vw, 19px); color: var(--ink-dim); line-height: 1.62; }
+  .hero-sub b { color: var(--ink); font-weight: 500; }
+
+  .quote {
+    margin-top: 38px; padding-left: 20px; border-left: 1px solid var(--blood-dim);
+    font-family: var(--drama); font-style: italic; font-size: 21px; color: var(--ink-mute); line-height: 1.4;
+  }
+
+  .hero-actions { margin-top: 40px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  .cmd-pill {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-family: var(--mono); font-size: 13.5px; color: var(--ink);
+    background: var(--bg-1); border: 1px solid var(--line); border-radius: 3px;
+    padding: 12px 14px;
+  }
+  .cmd-pill .dollar { color: var(--blood); }
+  .cmd-pill button {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    background: none; border: 1px solid var(--line); color: var(--ink-mute);
+    padding: 4px 9px; border-radius: 2px; cursor: pointer; transition: all .15s;
+  }
+  .cmd-pill button:hover { color: var(--ink); border-color: var(--ink-mute); }
+  .btn-ghost {
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.02em;
+    display: inline-flex; align-items: center; gap: 9px;
+    border: 1px solid var(--line); padding: 12px 18px; border-radius: 3px; color: var(--ink);
+    transition: border-color .18s, background .18s;
+  }
+  .btn-ghost:hover { border-color: var(--blood); background: var(--blood-glow); }
+  .btn-install {
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.02em;
+    display: inline-flex; align-items: center; gap: 9px;
+    background: var(--blood); color: var(--bg); border: 1px solid var(--blood);
+    padding: 12px 20px; border-radius: 3px; font-weight: 500;
+    transition: background .18s, border-color .18s, transform .18s;
+  }
+  .btn-install:hover { background: var(--blood-lo); border-color: var(--blood-lo); transform: translateY(-1px); }
+
+  /* hero redaction card */
+  .leak-card {
+    background: var(--bg-1); border: 1px solid var(--line-soft); border-radius: 5px;
+    font-family: var(--mono); font-size: 13px; line-height: 1.95; overflow: hidden;
+    box-shadow: 0 40px 80px -40px oklch(0 0 0 / 0.7);
+  }
+  .leak-head {
+    display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line-soft); color: var(--ink-mute); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .leak-head .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .leak-body { padding: 18px 18px 20px; }
+  .leak-body .k { color: var(--ink-dim); }
+  .leak-body .v-leak { color: oklch(0.7 0.13 30); }
+  .leak-body .comment { color: var(--ink-faint); }
+  .leak-body .ok { color: var(--blood); }
+
+  /* ─── section scaffolding ─────────────────────────── */
+  section.band { padding: clamp(80px, 13vh, 150px) 0; border-top: 1px solid var(--line-soft); position: relative; }
+  .sec-head { max-width: 740px; }
+  .sec-head h2 { font-size: clamp(34px, 5vw, 60px); font-weight: 200; margin-top: 22px; }
+  .sec-head h2 em { font-family: var(--drama); font-style: italic; color: var(--blood); font-weight: 400; }
+  .sec-head p { margin-top: 22px; font-size: clamp(16px, 1.5vw, 18.5px); color: var(--ink-dim); max-width: 60ch; }
+
+  .index-num { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); letter-spacing: 0.1em; }
+
+  /* ─── problem ─────────────────────────────────────── */
+  .problem-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(36px, 5vw, 72px); margin-top: 64px; align-items: start; }
+  @media (max-width: 880px) { .problem-grid { grid-template-columns: 1fr; gap: 44px; } }
+  .leak-trace { font-family: var(--mono); font-size: 13.5px; line-height: 2; }
+  .leak-trace .line { display: flex; gap: 14px; padding: 7px 0; border-bottom: 1px dashed var(--line-soft); color: var(--ink-dim); }
+  .leak-trace .line .who { color: var(--ink-mute); min-width: 132px; }
+  .leak-trace .line.bad .who { color: var(--blood); }
+  .leak-trace .line strong { color: var(--ink); font-weight: 500; }
+
+  .problem-points { display: flex; flex-direction: column; gap: 28px; }
+  .ppoint { padding-left: 22px; border-left: 1px solid var(--line); }
+  .ppoint h3 { font-family: var(--sans); font-size: 16px; font-weight: 600; letter-spacing: -0.005em; color: var(--ink); }
+  .ppoint p { margin: 8px 0 0; font-size: 14.5px; color: var(--ink-mute); line-height: 1.6; }
+
+  /* ─── fix / code blocks ──────────────────────────── */
+  .codeblock {
+    background: var(--bg-1); border: 1px solid var(--line-soft); border-radius: 5px; overflow: hidden;
+  }
+  .code-tabbar { display: flex; align-items: center; gap: 7px; padding: 11px 15px; border-bottom: 1px solid var(--line-soft); }
+  .code-tabbar .tdot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+  .code-tabbar .label { margin-left: auto; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); }
+  pre { margin: 0; padding: 22px 22px; font-family: var(--mono); font-size: 13.5px; line-height: 1.85; overflow-x: auto; color: var(--ink-dim); }
+  pre .c { color: var(--ink-faint); }
+  pre .p { color: var(--blood); }
+  pre .cmd { color: var(--ink); }
+  pre .arg { color: var(--ink-mute); }
+  pre .ok { color: oklch(0.72 0.10 150); }
+  pre .red { color: var(--blood); }
+
+  .fix-grid { display: grid; grid-template-columns: 0.92fr 1.08fr; gap: clamp(36px, 5vw, 64px); margin-top: 64px; align-items: center; }
+  @media (max-width: 880px) { .fix-grid { grid-template-columns: 1fr; gap: 40px; } }
+  .fix-copy h3 { font-family: var(--serif); font-weight: 300; font-size: 27px; margin-bottom: 18px; }
+  .fix-copy p { color: var(--ink-dim); font-size: 16px; margin: 0 0 16px; }
+  .fix-copy p b { color: var(--ink); font-weight: 500; }
+  .fix-copy .tag { font-family: var(--mono); font-size: 11px; color: var(--blood); letter-spacing: 0.1em; text-transform: uppercase; }
+
+  /* ─── how it works diagram ───────────────────────── */
+  .flow { margin-top: 70px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; position: relative; }
+  @media (max-width: 880px) { .flow { grid-template-columns: 1fr; } }
+  .stage { padding: 26px 24px; border: 1px solid var(--line-soft); border-right: none; position: relative; background: linear-gradient(180deg, var(--bg-1), var(--bg)); }
+  .stage:last-child { border-right: 1px solid var(--line-soft); }
+  @media (max-width: 880px) { .stage { border-right: 1px solid var(--line-soft); border-bottom: none; } .stage:last-child { border-bottom: 1px solid var(--line-soft); } }
+  .stage .st-num { font-family: var(--mono); font-size: 11px; color: var(--blood); letter-spacing: 0.1em; }
+  .stage .st-cmd { font-family: var(--mono); font-size: 13px; color: var(--ink); margin: 12px 0 10px; }
+  .stage .st-desc { font-size: 13px; color: var(--ink-mute); line-height: 1.55; }
+  .stage .st-state { margin-top: 16px; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .stage .st-state.enc { color: var(--blood); }
+  .stage .st-state.dec { color: oklch(0.72 0.10 150); }
+  .stage .st-state.zero { color: var(--ink-faint); }
+
+  /* ─── comparison table ───────────────────────────── */
+  .cmp { margin-top: 60px; border: 1px solid var(--line-soft); border-radius: 5px; overflow: hidden; }
+  .cmp table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  .cmp th, .cmp td { text-align: left; padding: 16px 22px; border-bottom: 1px solid var(--line-soft); }
+  .cmp thead th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-mute); font-weight: 500; background: var(--bg-1); }
+  .cmp thead th.cora { color: var(--blood); }
+  .cmp tbody th { font-weight: 400; color: var(--ink-dim); font-family: var(--sans); }
+  .cmp td { color: var(--ink-mute); font-family: var(--mono); font-size: 13px; }
+  .cmp td.cora { color: var(--ink); background: var(--blood-glow); font-weight: 500; }
+  .cmp tr:last-child th, .cmp tr:last-child td { border-bottom: none; }
+  .cmp .x { color: var(--ink-faint); }
+
+  /* ─── install tabs ───────────────────────────────── */
+  .tabs { margin-top: 56px; }
+  .tabbar { display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line-soft); }
+  .tabbar button {
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.02em;
+    background: none; border: none; color: var(--ink-mute); cursor: pointer;
+    padding: 13px 18px; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .15s;
+  }
+  .tabbar button:hover { color: var(--ink-dim); }
+  .tabbar button.active { color: var(--ink); border-bottom-color: var(--blood); }
+  .tabbar button .rec { color: var(--blood); font-size: 10px; margin-left: 7px; letter-spacing: 0.1em; }
+  .tabpanel { display: none; margin-top: 22px; }
+  .tabpanel.active { display: block; }
+  .tabpanel .note { margin-top: 16px; font-size: 13.5px; color: var(--ink-mute); max-width: 64ch; }
+  .tabpanel .note code { font-family: var(--mono); color: var(--ink-dim); font-size: 12.5px; }
+
+  /* ─── command table ──────────────────────────────── */
+  .cmd-table { margin-top: 60px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: 5px; overflow: hidden; }
+  @media (max-width: 720px) { .cmd-table { grid-template-columns: 1fr; } }
+  .crow { background: var(--bg); padding: 20px 24px; display: flex; flex-direction: column; gap: 8px; transition: background .15s; }
+  .crow:hover { background: var(--bg-1); }
+  .crow .ct { font-family: var(--sans); font-size: 14px; color: var(--ink-dim); }
+  .crow .cc { font-family: var(--mono); font-size: 13px; color: var(--ink); }
+  .crow .cc .p { color: var(--blood); }
+
+  /* ─── OS selector (install) ──────────────────────── */
+  .os-seg { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--line-soft); border-radius: 4px; background: var(--bg-1); margin-bottom: 26px; }
+  .os-seg button {
+    font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.03em;
+    background: none; border: none; color: var(--ink-mute); cursor: pointer;
+    padding: 8px 18px; border-radius: 2px; transition: color .15s, background .15s;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .os-seg button .det { font-size: 10px; color: var(--blood); letter-spacing: 0.1em; }
+  .os-seg button:hover { color: var(--ink-dim); }
+  .os-seg button.active { color: var(--ink); background: var(--bg-2); }
+  .tabbar button.hide { display: none; }
+
+  /* ─── TUI showcase ───────────────────────────────── */
+  .tui-wrap { margin-top: 56px; }
+  .tui {
+    --tbg: oklch(0.155 0.014 255); --tpanel: oklch(0.185 0.015 255);
+    --tline: oklch(0.32 0.022 255); --ttext: oklch(0.86 0.012 255);
+    --tdim: oklch(0.60 0.022 255); --thead: oklch(0.75 0.045 250);
+    --tgreen: oklch(0.74 0.15 152); --tgreen-bg: oklch(0.30 0.065 158);
+    --tred: oklch(0.66 0.16 25); --tamber: oklch(0.79 0.13 68);
+    background: var(--tbg); border: 1px solid var(--line-soft); border-radius: 6px; overflow: hidden;
+    font-family: var(--mono); box-shadow: 0 40px 90px -50px oklch(0 0 0 / 0.8);
+  }
+  .tui-chrome { display: flex; align-items: center; gap: 8px; padding: 11px 15px; border-bottom: 1px solid var(--line-soft); background: var(--bg-1); }
+  .tui-chrome .tdot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); }
+  .tui-chrome .label { margin-left: auto; font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); }
+  .tui-screen { padding: 14px; }
+  .tui-topbar { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--tline); padding: 11px 16px; border-radius: 3px; }
+  .tui-topbar .tt-title { color: var(--ttext); font-weight: 600; font-size: 14px; }
+  .tui-topbar .tt-status { color: var(--tred); font-weight: 600; font-size: 13px; }
+  .tui-body { display: grid; grid-template-columns: 230px 1fr; gap: 12px; margin-top: 12px; }
+  @media (max-width: 720px) { .tui-body { grid-template-columns: 1fr; } }
+  .tui-nav, .tui-main { border: 1px solid var(--tline); border-radius: 3px; padding: 14px; min-height: 320px; }
+  .tn-head, .tm-head { color: var(--thead); font-weight: 600; font-size: 13px; margin-bottom: 14px; }
+  .tn-item { padding: 7px 10px; border-radius: 2px; margin-bottom: 8px; line-height: 1.35; }
+  .tn-item .tn-t { display: block; color: var(--ttext); font-size: 13.5px; }
+  .tn-item .tn-s { display: block; color: var(--tdim); font-size: 12px; }
+  .tn-item.active { background: var(--tgreen-bg); }
+  .tn-item.active .tn-t { color: var(--tgreen); font-weight: 600; }
+  .tm-head { margin-bottom: 4px; }
+  .tm-sub { color: var(--tdim); font-size: 12.5px; margin-bottom: 18px; }
+  .tm-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  @media (max-width: 520px) { .tm-cards { grid-template-columns: 1fr 1fr; } }
+  .tcard { border: 1px solid var(--tline); border-radius: 3px; padding: 12px 14px; background: var(--tpanel); }
+  .tc-wide { margin-top: 10px; max-width: 280px; }
+  .tc-label { color: var(--tdim); font-size: 12.5px; margin-bottom: 7px; }
+  .tc-val { color: var(--ttext); font-size: 15px; font-weight: 600; }
+  .tc-val.off { color: var(--tred); }
+  .tc-val.warn { color: var(--tamber); }
+  .tm-foot { margin-top: 20px; }
+  .tf-label { color: var(--thead); font-weight: 600; font-size: 12.5px; margin-bottom: 5px; }
+  .tf-val { color: var(--ttext); font-size: 13px; }
+  .tf-val.dim { color: var(--tdim); }
+  .tui-hotkeys { border-top: 1px solid var(--line-soft); padding: 12px 16px; background: var(--bg-1); font-size: 12.5px; color: var(--tdim); }
+  .tui-hotkeys .th-label { color: var(--thead); font-weight: 600; margin-right: 14px; }
+  .tui-keys { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 8px; }
+  .tui-keys .k b { color: var(--ttext); font-weight: 600; }
+  .tui-caption { margin-top: 22px; display: flex; flex-wrap: wrap; gap: 10px 28px; }
+  .tui-caption .tcap { font-size: 14px; color: var(--ink-mute); display: flex; align-items: baseline; gap: 10px; }
+  .tui-caption .tcap b { font-family: var(--mono); font-size: 12.5px; color: var(--blood); font-weight: 500; }
+
+  /* ─── footer ─────────────────────────────────────── */
+  footer { border-top: 1px solid var(--line-soft); padding: clamp(70px, 11vh, 120px) 0 60px; position: relative; }
+  .foot-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 50px; align-items: end; }
+  @media (max-width: 720px) { .foot-grid { grid-template-columns: 1fr; gap: 36px; } }
+  .foot-quote { font-family: var(--drama); font-style: italic; font-size: clamp(26px, 4vw, 44px); font-weight: 400; color: var(--ink); line-height: 1.2; max-width: 18ch; }
+  .foot-quote span { color: var(--blood); }
+  .foot-meta { font-family: var(--mono); font-size: 12.5px; color: var(--ink-mute); line-height: 2; }
+  .foot-meta a { color: var(--ink-dim); border-bottom: 1px solid var(--line); transition: color .15s, border-color .15s; }
+  .foot-meta a:hover { color: var(--blood); border-color: var(--blood); }
+  .foot-bottom { margin-top: 70px; padding-top: 26px; border-top: 1px solid var(--line-soft); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 14px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); letter-spacing: 0.04em; }
+  .foot-attr { font-family: var(--drama); font-style: italic; font-size: 15px; color: var(--ink-mute); letter-spacing: 0; }
+
+  /* visible end-state is the DEFAULT. animation is an enhancement that only
+     applies once JS is present (.js) AND motion is allowed. */
+  .reveal { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: no-preference) {
+    .js .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s cubic-bezier(.2,.6,.2,1), transform .7s cubic-bezier(.2,.6,.2,1); }
+    .js .reveal.in { opacity: 1; transform: none; }
+  }
+</style>
+</head>
+<body>
+
+<nav id="nav">
+  <div class="nav-in">
+    <a href="#top" class="brand"><span class="glyph">█</span><b>cora</b></a>
+    <div class="nav-links">
+      <a href="#problem">The Problem</a>
+      <a href="#fix">The Fix</a>
+      <a href="#how">How It Works</a>
+      <a href="#install">Install</a>
+      <a href="#tui">TUI</a>
+      <a href="https://github.com/keton-id/cora" class="nav-cta">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<a id="top"></a>
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="eyebrow">Zero-knowledge runtime · written in Zig</span>
+      <h1>Your agent never <em>hears</em> the secret.</h1>
+      <p class="hero-sub">Not in memory. Not on disk. Not ever. <b>One encrypted file, one passphrase</b> — carry your secrets anywhere, and let no process hold what it doesn't need.</p>
+      <blockquote class="quote">“He never let anyone hear his true voice.”</blockquote>
+      <div class="hero-actions">
+        <a href="#install" class="btn-install"><span class="glyph" style="color:var(--bg)">█</span> Install cora</a>
+        <a href="https://github.com/keton-id/cora" class="btn-ghost"><span class="glyph" style="color:var(--blood)">█</span> Star on GitHub</a>
+      </div>
+    </div>
+    <div class="leak-card reveal">
+      <div class="leak-head"><span class="dot" style="background:var(--blood)"></span> in&nbsp;memory · while&nbsp;unlocked</div>
+      <div class="leak-body">
+        <div><span class="comment"># the agent process sees only this</span></div>
+        <div><span class="k">ANTHROPIC_API_KEY</span> = <span class="redact">sk-ant-api03-xxxxxxxxxxxx</span></div>
+        <div><span class="k">GITHUB_TOKEN</span> = <span class="redact">ghp_xxxxxxxxxxxxxxxxxxxx</span></div>
+        <div><span class="k">STRIPE_SECRET</span> = <span class="redact">sk_live_xxxxxxxxxxxxxxxx</span></div>
+        <br />
+        <div><span class="comment"># grep anything cora touches</span></div>
+        <div><span class="k">$</span> grep -a 'sk-ant-' cora.zon</div>
+        <div><span class="ok">→ no hits — encrypted at rest</span></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- ─────────── THE PROBLEM ─────────── -->
+<section class="band" id="problem">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">01 — The Problem</span>
+      <h2>Every agent runtime leaks by <em>default.</em></h2>
+      <p>The moment you put a key in the environment, it belongs to everything that process can reach — every skill, every prompt, every plugin.</p>
+    </div>
+    <div class="problem-grid">
+      <div class="codeblock reveal">
+        <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">~/agent · bash</span></div>
+        <pre><span class="c"># the one line every runtime ships</span>
+<span class="red">ANTHROPIC_API_KEY=sk-ant-...</span> claude -p <span class="arg">"summarize repo"</span>
+
+<span class="c"># now the value lives in the agent's env.</span>
+<span class="c"># everyone downstream can read it:</span>
+<span class="cmd">printenv</span> | grep ANTHROPIC   <span class="c">→ sk-ant-...</span>
+<span class="cmd">cat</span> /proc/self/environ      <span class="c">→ sk-ant-...</span></pre>
+      </div>
+      <div class="problem-points reveal">
+        <div class="ppoint">
+          <h3>Every skill can read it</h3>
+          <p>Anything running inside the agent shares its environment. A single dependency is a single point of exfiltration.</p>
+        </div>
+        <div class="ppoint">
+          <h3>Every prompt injection can ask for it</h3>
+          <p>“Print <span style="font-family:var(--mono);font-size:13px">ANTHROPIC_API_KEY</span>” succeeds the instant the value is something the model's process can actually see.</p>
+        </div>
+        <div class="ppoint">
+          <h3>Every plugin can exfiltrate it</h3>
+          <p>Malicious or merely careless, third-party code inherits the same secrets you handed the orchestrator.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── THE FIX ─────────── -->
+<section class="band" id="fix">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">02 — The Fix</span>
+      <h2>Cora <em>whispers</em> the value past the agent.</h2>
+      <p>The secret is injected straight into the subprocess after the kernel verifies who's asking. The orchestrating process never reads it.</p>
+    </div>
+    <div class="fix-grid">
+      <div class="codeblock reveal">
+        <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">~/project · cr</span></div>
+<pre><span class="p">$</span> <span class="cmd">cr</span> unlock                         <span class="c"># passphrase → service starts</span>
+<span class="ok">✓ unlocked · 3 secrets in memory</span>
+
+<span class="p">$</span> <span class="cmd">cr</span> exec claude-task <span class="arg">--</span> \
+     claude -p <span class="arg">"summarize this repo"</span>
+<span class="c"># ANTHROPIC_API_KEY injected into the child only</span>
+<span class="ok">child pid 48213 · exit 0</span>
+
+<span class="p">$</span> <span class="cmd">cr</span> lock                           <span class="c"># memory zeroed</span>
+<span class="ok">✓ secureZero · service stopped</span></pre>
+      </div>
+      <div class="fix-copy reveal">
+        <span class="tag">the whisperer model</span>
+        <h3>The client never touches the value.</h3>
+        <p>Claude spawns, needs <b>ANTHROPIC_API_KEY</b>, and the Cora service injects it directly into the subprocess — <b>after verifying the caller binary at the kernel level.</b></p>
+        <p>The <code style="font-family:var(--mono);font-size:14px;color:var(--ink)">cr</code> client process never reads the value. The subprocess uses it and exits. Memory zeroed.</p>
+        <p>Prompt injection tries <code style="font-family:var(--mono);font-size:14px;color:var(--ink)">"print ANTHROPIC_API_KEY"</code> against the orchestrator — <b>nothing to print.</b> The value was never in that process.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── HOW IT WORKS ─────────── -->
+<section class="band" id="how">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">03 — How It Works</span>
+      <h2>Encrypted at rest. Ephemeral in <em>memory.</em></h2>
+      <p>Argon2id derives a key from your passphrase. XChaCha20-Poly1305 keeps the file sealed. Plaintext lives only in service memory — and only while you're unlocked.</p>
+    </div>
+    <div class="flow reveal">
+      <div class="stage">
+        <div class="st-num">01</div>
+        <div class="st-cmd">cora.zon</div>
+        <div class="st-desc">One file at rest, sealed with XChaCha20-Poly1305.</div>
+        <div class="st-state enc">█ encrypted</div>
+      </div>
+      <div class="stage">
+        <div class="st-num">02</div>
+        <div class="st-cmd">cr unlock</div>
+        <div class="st-desc">Argon2id derives the key, decrypts, then zeroes the key.</div>
+        <div class="st-state dec">○ decrypting</div>
+      </div>
+      <div class="stage">
+        <div class="st-num">03</div>
+        <div class="st-cmd">service memory</div>
+        <div class="st-desc">Secrets live here — and nowhere else — while unlocked.</div>
+        <div class="st-state dec">○ in memory</div>
+      </div>
+      <div class="stage">
+        <div class="st-num">04</div>
+        <div class="st-cmd">cr exec</div>
+        <div class="st-desc">Value injected into the subprocess env. Agent never holds it.</div>
+        <div class="st-state dec">○ injected</div>
+      </div>
+      <div class="stage">
+        <div class="st-num">05</div>
+        <div class="st-cmd">cr lock</div>
+        <div class="st-desc">secureZero wipes every buffer. Back to encrypted at rest.</div>
+        <div class="st-state zero">× zeroed</div>
+      </div>
+    </div>
+    <div class="problem-grid" style="margin-top:54px">
+      <div class="problem-points reveal">
+        <div class="ppoint">
+          <h3>Caller verified at the kernel</h3>
+          <p>SO_PEERCRED on Linux, LOCAL_PEERPID on macOS, named-pipe PID on Windows. Cora trusts the OS, not application tokens.</p>
+        </div>
+        <div class="ppoint">
+          <h3>Passphrase-derived, no infra</h3>
+          <p>Argon2id (t=3, 64MB, p=4) → XChaCha20-Poly1305. No cloud, no daemon, no keychain dependency.</p>
+        </div>
+      </div>
+      <div class="problem-points reveal">
+        <div class="ppoint">
+          <h3>Task-scoped injection</h3>
+          <p>A task names exactly which secrets — and which target binaries — <span style="font-family:var(--mono);font-size:13px">cr exec</span> may use. Nothing leaks beyond its scope.</p>
+        </div>
+        <div class="ppoint">
+          <h3>Audit without values</h3>
+          <p>Every action is logged to <span style="font-family:var(--mono);font-size:13px">~/.cora/audit.jsonl</span> — names only, never secret values. By construction.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── COMPARISON ─────────── -->
+<section class="band" id="compare">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">04 — How It's Different</span>
+      <h2>Not a vault. Not a proxy. A <em>whisperer.</em></h2>
+    </div>
+    <div class="cmp reveal">
+      <table>
+        <thead>
+          <tr>
+            <th></th>
+            <th class="cora">cora</th>
+            <th>.env files</th>
+            <th>HashiCorp Vault</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><th>Storage</th><td class="cora">Encrypted file</td><td>Plaintext</td><td>Cloud / local</td></tr>
+          <tr><th>Portable</th><td class="cora">Yes — one file</td><td>Partial</td><td class="x">No</td></tr>
+          <tr><th>Memory zeroing</th><td class="cora">secureZero</td><td>GC</td><td>GC</td></tr>
+          <tr><th>Caller verified</th><td class="cora">OS kernel</td><td class="x">Nothing</td><td class="x">Nothing</td></tr>
+          <tr><th>Agent gets the value?</th><td class="cora">Never</td><td>Always</td><td>Depends</td></tr>
+          <tr><th>Infra required</th><td class="cora">None</td><td>None</td><td>Heavy</td></tr>
+          <tr><th>Single binary</th><td class="cora">Yes</td><td class="x">N/A</td><td class="x">No</td></tr>
+          <tr><th>Interactive TUI</th><td class="cora">Yes — pane-based</td><td class="x">No</td><td class="x">No</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── INSTALL ─────────── -->
+<section class="band" id="install">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">05 — Install</span>
+      <h2>Pick whichever fits your <em>trust model.</em></h2>
+      <p>Package name is <span style="font-family:var(--mono);font-size:15px;color:var(--ink-dim)">cora</span>; the installed binary is <span style="font-family:var(--mono);font-size:15px;color:var(--ink-dim)">cr</span>. Pick your OS, then your method.</p>
+    </div>
+    <div class="tabs reveal">
+      <div class="os-seg" id="osSeg">
+        <button data-os="mac" class="active">macOS</button>
+        <button data-os="linux">Linux</button>
+        <button data-os="windows">Windows</button>
+      </div>
+      <div class="tabbar" id="tabbar">
+        <button class="active" data-tab="script" data-os="mac linux">Install script<span class="rec">recommended</span></button>
+        <button data-tab="brew" data-os="mac linux">Homebrew</button>
+        <button data-tab="scoop" data-os="windows">Scoop</button>
+        <button data-tab="npm" data-os="mac linux windows">npm</button>
+        <button data-tab="source" data-os="mac linux windows">From source</button>
+      </div>
+
+      <div class="tabpanel active" data-panel="script">
+        <div class="codeblock">
+          <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">macOS · Linux</span></div>
+<pre><span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh | sh
+
+<span class="c"># pin a specific tag</span>
+<span class="p">$</span> curl -fsSL .../install.sh | sh -s -- <span class="arg">--version 1.0.0</span>
+
+<span class="c"># track a prerelease channel</span>
+<span class="p">$</span> curl -fsSL .../install.sh | sh -s -- <span class="arg">--channel alpha</span></pre>
+        </div>
+        <p class="note">Fetches the latest stable release for your OS/arch, verifies the <code>SHA256</code> checksum, and installs to <code>/usr/local/bin</code> (or <code>~/.local/bin</code> without sudo).</p>
+      </div>
+
+      <div class="tabpanel" data-panel="brew">
+        <div class="codeblock">
+          <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">macOS · Linux</span></div>
+<pre><span class="p">$</span> brew tap keton-id/tap
+<span class="p">$</span> brew install cora</pre>
+        </div>
+        <p class="note">The tap is updated automatically by Cora's release pipeline on every stable tag. <code>brew upgrade cora</code> picks up new releases. Pre-release alphas are not pushed to the tap.</p>
+      </div>
+
+      <div class="tabpanel" data-panel="scoop">
+        <div class="codeblock">
+          <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">Windows · PowerShell</span></div>
+<pre><span class="p">></span> scoop bucket add keton-id https://github.com/keton-id/scoop-bucket
+<span class="p">></span> scoop install cora</pre>
+        </div>
+        <p class="note">Installed binary is <code>cr.exe</code>. <code>scoop update cora</code> picks up new stable releases — the bucket is updated automatically on every stable tag.</p>
+      </div>
+
+      <div class="tabpanel" data-panel="npm">
+        <div class="codeblock">
+          <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">node · npm</span></div>
+<pre><span class="p">$</span> npm i -g @keton-id/cora
+
+<span class="c"># or one-shot via npx</span>
+<span class="p">$</span> npx @keton-id/cora --help</pre>
+        </div>
+        <p class="note">One package bundles prebuilt <code>cr</code> binaries for macOS, Linux, and Windows (x64 + arm64). A tiny JS launcher picks the matching binary at runtime — no postinstall download, no native addon.</p>
+      </div>
+
+      <div class="tabpanel" data-panel="source">
+        <div class="codeblock">
+          <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">Zig 0.16+</span></div>
+<pre><span class="p">$</span> git clone https://github.com/keton-id/cora && cd cora
+<span class="p">$</span> zig build -Doptimize=ReleaseSafe
+<span class="p">$</span> sudo install -m 0755 zig-out/bin/cr /usr/local/bin/cr
+
+<span class="c"># or via the make wrapper</span>
+<span class="p">$</span> make release && make install</pre>
+        </div>
+        <p class="note">Requires Zig <code>0.16+</code>. <code>make install</code> defaults to <code>~/.local/bin</code>; override with <code>make install PREFIX=/usr/local</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── COMMANDS ─────────── -->
+<section class="band" id="commands">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">06 — What's Inside</span>
+      <h2>One binary. Every <em>verb</em> you need.</h2>
+      <p>Run <span style="font-family:var(--mono);font-size:15px;color:var(--ink-dim)">cr</span> with no arguments for full usage.</p>
+    </div>
+    <div class="cmd-table reveal">
+      <div class="crow"><span class="ct">Create the encrypted file</span><span class="cc"><span class="p">$</span> cr init</span></div>
+      <div class="crow"><span class="ct">Manage secrets</span><span class="cc"><span class="p">$</span> cr secrets set · list · delete</span></div>
+      <div class="crow"><span class="ct">Allowlist callers</span><span class="cc"><span class="p">$</span> cr policy allow · deny PATH</span></div>
+      <div class="crow"><span class="ct">Scope a task</span><span class="cc"><span class="p">$</span> cr policy task add NAME …</span></div>
+      <div class="crow"><span class="ct">Start &amp; stop the service</span><span class="cc"><span class="p">$</span> cr unlock · lock · status</span></div>
+      <div class="crow"><span class="ct">Spawn an agent</span><span class="cc"><span class="p">$</span> cr exec TASK -- argv…</span></div>
+      <div class="crow"><span class="ct">Read the audit trail</span><span class="cc"><span class="p">$</span> cr audit tail · show</span></div>
+      <div class="crow"><span class="ct">Interactive pane UI</span><span class="cc"><span class="p">$</span> cr tui</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── TUI ─────────── -->
+<section class="band" id="tui">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <span class="eyebrow">07 — Interactive TUI</span>
+      <h2>The whole runtime, in a <em>pane.</em></h2>
+      <p>Run <span style="font-family:var(--mono);font-size:15px;color:var(--ink-dim)">cr tui</span> for a keyboard-driven control center — dashboard, audit, secrets, and lock, all without leaving the terminal.</p>
+    </div>
+    <div class="tui-wrap reveal">
+      <div class="tui">
+        <div class="tui-chrome"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">cr tui · cora control center</span></div>
+        <div class="tui-screen">
+          <div class="tui-topbar">
+            <span class="tt-title">Cora Control Center</span>
+            <span class="tt-status">Service offline</span>
+          </div>
+          <div class="tui-body">
+            <div class="tui-nav">
+              <div class="tn-head">Navigation</div>
+              <div class="tn-item active"><span class="tn-t">Dashboard</span><span class="tn-s">overview</span></div>
+              <div class="tn-item"><span class="tn-t">Audit Log</span><span class="tn-s">scrollable</span></div>
+              <div class="tn-item"><span class="tn-t">Secrets</span><span class="tn-s">secure names</span></div>
+              <div class="tn-item"><span class="tn-t">Lock Service</span><span class="tn-s">confirm action</span></div>
+            </div>
+            <div class="tui-main">
+              <div class="tm-head">Dashboard</div>
+              <div class="tm-sub">Live service state and config snapshot</div>
+              <div class="tm-cards">
+                <div class="tcard"><div class="tc-label">Service</div><div class="tc-val off">Offline</div></div>
+                <div class="tcard"><div class="tc-label">Secrets</div><div class="tc-val">0</div></div>
+                <div class="tcard"><div class="tc-label">Idle TTL</div><div class="tc-val">0 m</div></div>
+              </div>
+              <div class="tcard tc-wide"><div class="tc-label">Config</div><div class="tc-val warn">no cora.zon in cwd</div></div>
+              <div class="tm-foot">
+                <div class="tf-label">Socket Path</div>
+                <div class="tf-val">/tmp/cora-501.sock</div>
+              </div>
+              <div class="tm-foot">
+                <div class="tf-label">Quick Actions</div>
+                <div class="tf-val dim">r refresh&nbsp;&nbsp;&nbsp;Enter activate pane&nbsp;&nbsp;&nbsp;? help&nbsp;&nbsp;&nbsp;l lock&nbsp;&nbsp;&nbsp;q quit</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="tui-hotkeys">
+          <span class="th-label">Hotkeys</span>j/k or arrows navigate&nbsp;&nbsp;&nbsp;Enter open&nbsp;&nbsp;&nbsp;PgUp/PgDn scroll&nbsp;&nbsp;&nbsp;r refresh&nbsp;&nbsp;&nbsp;l lock&nbsp;&nbsp;&nbsp;? help&nbsp;&nbsp;&nbsp;q quit
+        </div>
+      </div>
+      <div class="tui-caption">
+        <div class="tcap"><b>4 panes</b> <span>dashboard · audit · secrets · lock</span></div>
+        <div class="tcap"><b>vaxis</b> <span>pane-based, fully keyboard-driven</span></div>
+        <div class="tcap"><b>isolated</b> <span>decoupled from the exec / unlock paths</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── FOOTER ─────────── -->
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-quote reveal">Hide everything<br />to protect what <span>matters.</span></div>
+      <div class="foot-meta reveal">
+        <div><a href="https://github.com/keton-id/cora">github.com/keton-id/cora ↗</a></div>
+        <div><a href="https://github.com/keton-id/cora/blob/main/SECURITY.md">Threat model · SECURITY.md ↗</a></div>
+        <div><a href="https://github.com/keton-id/cora/releases">Releases ↗</a></div>
+        <div style="color:var(--ink-faint);margin-top:10px">AGPL-3.0 · macOS · Linux · Windows · Zig 0.16</div>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 cora — zero-knowledge secret runtime</span>
+      <span class="foot-attr">Named after Corazon, who hid everything to protect what mattered.</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // nav border on scroll
+  const nav = document.getElementById('nav');
+  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 8);
+  onScroll(); window.addEventListener('scroll', onScroll, { passive: true });
+
+  // install tabs
+  const tabbar = document.getElementById('tabbar');
+  const osSeg = document.getElementById('osSeg');
+
+  function selectTab(tab) {
+    tabbar.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('.tabpanel').forEach(p => p.classList.toggle('active', p.dataset.panel === tab));
+  }
+
+  function selectOS(os) {
+    osSeg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.os === os));
+    let firstVisible = null;
+    tabbar.querySelectorAll('button').forEach(b => {
+      const ok = b.dataset.os.split(' ').includes(os);
+      b.classList.toggle('hide', !ok);
+      if (ok && !firstVisible) firstVisible = b;
+    });
+    // keep current tab if still visible for this OS, else jump to first
+    const active = tabbar.querySelector('button.active:not(.hide)');
+    selectTab((active || firstVisible).dataset.tab);
+  }
+
+  tabbar.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (btn) selectTab(btn.dataset.tab);
+  });
+  osSeg.addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (btn) selectOS(btn.dataset.os);
+  });
+
+  // auto-detect OS
+  (function () {
+    const ua = (navigator.userAgent + ' ' + (navigator.platform || '')).toLowerCase();
+    let os = 'mac';
+    if (ua.includes('win')) os = 'windows';
+    else if (ua.includes('linux') || ua.includes('android') || ua.includes('x11')) os = 'linux';
+    else if (ua.includes('mac') || ua.includes('iphone') || ua.includes('ipad')) os = 'mac';
+    selectOS(os);
+  })();
+
+  // copy buttons
+  document.querySelectorAll('[data-copy]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(btn.dataset.copy);
+        const prev = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = prev; }, 1400);
+      } catch (_) {}
+    });
+  });
+
+  // reveal on scroll — but only HIDE content once we know we can reliably
+  // bring it back. enable hidden start-state, then reveal via observer with
+  // a hard fallback so nothing can get stuck invisible.
+  (function () {
+    const els = [...document.querySelectorAll('.reveal')];
+    const reveal = el => el.classList.add('in');
+    const revealAll = () => els.forEach(reveal);
+
+    if (!('IntersectionObserver' in window)) { revealAll(); return; }
+
+    document.documentElement.classList.add('js'); // arms the hidden start-state
+
+    let fired = false;
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(en => { if (en.isIntersecting) { fired = true; reveal(en.target); io.unobserve(en.target); } });
+    }, { threshold: 0.08, rootMargin: '0px 0px -6% 0px' });
+    els.forEach(el => io.observe(el));
+
+    // immediately reveal anything already within the viewport
+    requestAnimationFrame(() => {
+      const vh = window.innerHeight || document.documentElement.clientHeight;
+      els.forEach(el => { const r = el.getBoundingClientRect(); if (r.top < vh && r.bottom > 0) reveal(el); });
+    });
+
+    // hard fallback: if the observer never fired, un-hide everything
+    setTimeout(() => { if (!fired) revealAll(); }, 1200);
+  })();
+</script>
+</body>
+</html>
