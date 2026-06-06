@@ -261,8 +261,8 @@ jobs:
             gh release edit "$TAG" --draft=false --prerelease=false --repo "$GITHUB_REPOSITORY"
           fi
 
-  update-release-badge:
-    name: update README release badge
+  update-release-badges:
+    name: update README release badges
     needs: [resolve, publish]
     runs-on: ubuntu-latest
     steps:
@@ -270,56 +270,60 @@ jobs:
         with:
           ref: main
 
-      - name: Refresh per-OS badge JSON
+      - name: Refresh stable and prerelease badge JSON
         env:
-          OS: ${{ needs.resolve.outputs.os }}
-          VERSION: ${{ needs.resolve.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
-          case "$OS" in
-            macos)
-              LABEL="macOS"
-              COLOR="0db7ed"
-              ;;
-            linux)
-              LABEL="Linux"
-              COLOR="fcc624"
-              ;;
-            windows)
-              LABEL="Windows"
-              COLOR="00a4ef"
-              ;;
-            *)
-              echo "unknown OS '$OS'" >&2
-              exit 1
-              ;;
-          esac
-
           mkdir -p .github/badges
-          cat > ".github/badges/${OS}.json" <<EOF
-          {
-            "schemaVersion": 1,
-            "label": "${LABEL}",
-            "message": "v${VERSION}",
-            "color": "${COLOR}"
-          }
-          EOF
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
+          python3 <<'PY'
+          import json
+          from pathlib import Path
 
-      - name: Commit updated badge
-        env:
-          OS: ${{ needs.resolve.outputs.os }}
-          VERSION: ${{ needs.resolve.outputs.version }}
+          releases = json.loads(Path("releases.json").read_text())
+          badges_dir = Path(".github/badges")
+          colors = {"macos": "0db7ed", "linux": "fcc624", "windows": "00a4ef"}
+          labels = {"macos": "macOS", "linux": "Linux", "windows": "Windows"}
+
+          def latest_tag(os_name: str, prerelease: bool):
+              prefix = f"cora-{os_name}-v"
+              for rel in releases:
+                  if rel.get("draft"):
+                      continue
+                  if rel.get("prerelease") != prerelease:
+                      continue
+                  tag = rel.get("tag_name", "")
+                  if tag.startswith(prefix):
+                      return tag[len(f"cora-{os_name}-") :]
+              return None
+
+          for os_name in ("macos", "linux", "windows"):
+              for channel, is_prerelease in (("stable", False), ("prerelease", True)):
+                  message = latest_tag(os_name, is_prerelease) or "not yet"
+                  color = colors[os_name] if message != "not yet" else "9f9f9f"
+                  payload = {
+                      "schemaVersion": 1,
+                      "label": labels[os_name],
+                      "message": message,
+                      "color": color,
+                  }
+                  (badges_dir / f"{channel}-{os_name}.json").write_text(
+                      json.dumps(payload, indent=2) + "\n"
+                  )
+          PY
+
+      - name: Commit updated badges
         run: |
           set -euo pipefail
-          if git diff --quiet -- ".github/badges/${OS}.json"; then
-            echo "Badge unchanged; skipping commit."
+          if git diff --quiet -- .github/badges; then
+            echo "Badges unchanged; skipping commit."
             exit 0
           fi
           git config user.email "actions@github.com"
           git config user.name "github-actions[bot]"
-          git add ".github/badges/${OS}.json"
-          git commit -m "docs: update ${OS} release badge to v${VERSION}"
+          git add .github/badges
+          git commit -m "docs: refresh release badges"
           git push
 
   publish-homebrew:
