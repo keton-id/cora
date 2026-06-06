@@ -24,6 +24,13 @@ mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
 model.
 -->
 
+## [0.9.4-alpha.2](https://github.com/keton-id/cora/compare/v0.9.3-alpha.2...v0.9.4-alpha.2) (2026-06-06)
+
+
+### Bug Fixes
+
+* **2026-06:** patch Critical/High audit findings + remove dead code ([#56](https://github.com/keton-id/cora/issues/56)) ([83346d0](https://github.com/keton-id/cora/commit/83346d01cd3e4221b14aff912537f639c70e6b66))
+
 ## [0.9.3-alpha.2](https://github.com/keton-id/cora/compare/v0.9.2-alpha.2...v0.9.3-alpha.2) (2026-06-06)
 
 
