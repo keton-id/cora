@@ -12,6 +12,10 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -19,3 +23,123 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .github/release-please-manifest.json
+
+  mirror-tags:
+    name: fan out per-OS mirror tags
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      # Use the PAT — pushes signed with the default GITHUB_TOKEN do not
+      # retrigger downstream workflows, and release.yml listens on the
+      # `cora-{os}-v*` mirror tags we are about to push.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      - name: Determine affected OS(es) from diff
+        id: classify
+        env:
+          NEW_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # Previous upstream tag: most recent `v*` (semver, possibly with a
+          # prerelease suffix) excluding the new one. If there is no
+          # previous tag (initial release), treat every OS as affected.
+          PREV="$(git tag --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$' \
+            | grep -v "^${NEW_TAG}$" \
+            | head -1 || true)"
+
+          if [ -z "$PREV" ]; then
+            echo "No previous v* tag — treating all OS as affected (initial release)."
+            CHANGED=""
+            FALLBACK="true"
+          else
+            CHANGED="$(git diff --name-only "$PREV..$NEW_TAG" || true)"
+            FALLBACK="false"
+            echo "Diff vs $PREV ($(echo "$CHANGED" | grep -c . || true) files changed):"
+            echo "$CHANGED"
+          fi
+
+          # Classify each changed file. OS-exclusive paths flip only their
+          # owning OS; everything else is treated as shared and flips all
+          # three. Documentation and config that never produces a binary
+          # change is explicitly ignored so a docs-only release does not
+          # rebuild every OS for nothing.
+          macos="false"
+          linux="false"
+          windows="false"
+
+          if [ "$FALLBACK" = "true" ] || [ -z "$CHANGED" ]; then
+            macos="true"; linux="true"; windows="true"
+          else
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              case "$f" in
+                src/identity/macos.zig)
+                  macos="true" ;;
+                src/identity/linux.zig)
+                  linux="true" ;;
+                src/identity/windows.zig|src/service/pipe_windows.zig|src/service/spawn_windows.zig)
+                  windows="true" ;;
+                README.md|CONTRIBUTING.md|SECURITY.md|RELEASING.md|CLAUDE.md|CHANGELOG.md|LICENSE)
+                  : ;;
+                docs/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md|.github/CODEOWNERS|.github/dependabot.yml)
+                  : ;;
+                *)
+                  # Anything under src/, build.zig, build.zig.zon, scripts/,
+                  # packaging/, install.sh, .github/workflows/, etc. is
+                  # shared — every OS may need to rebuild.
+                  macos="true"; linux="true"; windows="true" ;;
+              esac
+            done <<< "$CHANGED"
+          fi
+
+          # Safety net: a release with zero classified OS would publish no
+          # binaries. Fan out to all three so the operator can act on it.
+          if [ "$macos" = "false" ] && [ "$linux" = "false" ] && [ "$windows" = "false" ]; then
+            echo "warning: diff matched no OS-relevant paths — defaulting to all three." >&2
+            macos="true"; linux="true"; windows="true"
+          fi
+
+          echo "macos=${macos}" >> "$GITHUB_OUTPUT"
+          echo "linux=${linux}" >> "$GITHUB_OUTPUT"
+          echo "windows=${windows}" >> "$GITHUB_OUTPUT"
+          echo "Affected: macos=${macos} linux=${linux} windows=${windows}"
+
+      - name: Push per-OS mirror tags
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          NEW_TAG: ${{ needs.release-please.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+          MACOS: ${{ steps.classify.outputs.macos }}
+          LINUX: ${{ steps.classify.outputs.linux }}
+          WINDOWS: ${{ steps.classify.outputs.windows }}
+        run: |
+          set -euo pipefail
+          SHA="$(git rev-parse "${NEW_TAG}^{commit}")"
+
+          push_mirror() {
+            os="$1"
+            mirror="cora-${os}-v${VERSION}"
+
+            EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/${mirror}" \
+              --jq ".[] | select(.ref==\"refs/tags/${mirror}\") | .object.sha")
+            if [ -n "$EXISTING" ]; then
+              echo "Mirror ${mirror} already exists at ${EXISTING}; skipping."
+              return 0
+            fi
+
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/${mirror}" -f sha="${SHA}"
+            echo "Pushed ${mirror} -> ${SHA}"
+          }
+
+          [ "$MACOS"   = "true" ] && push_mirror macos
+          [ "$LINUX"   = "true" ] && push_mirror linux
+          [ "$WINDOWS" = "true" ] && push_mirror windows
+          echo "Done. release.yml will fire per pushed mirror tag."

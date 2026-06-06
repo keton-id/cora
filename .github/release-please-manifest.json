@@ -1,5 +1,3 @@
 {
-  "components/macos": "0.9.1-alpha.1",
-  "components/linux": "0.9.1-alpha.1",
-  "components/windows": "0.9.1-alpha.1"
+  ".": "0.9.1-alpha.1"
 }

@@ -1,152 +1,21 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "separate-pull-requests": false,
   "packages": {
-    "components/macos": {
+    ".": {
       "release-type": "simple",
-      "component": "cora-macos",
-      "package-name": "cora-macos",
-      "tag-format": "cora-macos-v${version}",
+      "package-name": "cora",
+      "tag-separator": "@",
       "include-component-in-tag": false,
-      "include-v-in-tag": false,
+      "include-v-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": false,
       "draft": true,
       "force-tag-creation": true,
       "prerelease": false,
-      "changelog-path": "CHANGELOG.md",
-      "include-paths": [
-        "components/macos",
-        "src/identity/macos.zig",
-        "src/identity/identity.zig",
-        "src/service/service.zig",
-        "src/service/client.zig",
-        "src/service/proto.zig",
-        "src/service/idle.zig",
-        "src/main.zig",
-        "src/audit.zig",
-        "src/root.zig",
-        "src/error.zig",
-        "src/crypto",
-        "src/store",
-        "src/policy",
-        "src/tui",
-        "build.zig",
-        ".versions.json"
-      ],
       "extra-files": [
         {
-          "type": "json",
-          "path": ".versions.json",
-          "jsonpath": "$.macos"
-        }
-      ],
-      "changelog-sections": [
-        { "type": "feat", "section": "Features" },
-        { "type": "fix", "section": "Bug Fixes" },
-        { "type": "perf", "section": "Performance" },
-        { "type": "security", "section": "Security" },
-        { "type": "docs", "section": "Documentation", "hidden": true },
-        { "type": "chore", "section": "Misc", "hidden": true },
-        { "type": "refactor", "section": "Refactor", "hidden": true },
-        { "type": "test", "section": "Tests", "hidden": true },
-        { "type": "build", "section": "Build", "hidden": true },
-        { "type": "ci", "section": "CI", "hidden": true },
-        { "type": "style", "section": "Style", "hidden": true }
-      ]
-    },
-    "components/linux": {
-      "release-type": "simple",
-      "component": "cora-linux",
-      "package-name": "cora-linux",
-      "tag-format": "cora-linux-v${version}",
-      "include-component-in-tag": false,
-      "include-v-in-tag": false,
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": false,
-      "draft": true,
-      "force-tag-creation": true,
-      "prerelease": false,
-      "changelog-path": "CHANGELOG.md",
-      "include-paths": [
-        "components/linux",
-        "src/identity/linux.zig",
-        "src/identity/identity.zig",
-        "src/service/service.zig",
-        "src/service/client.zig",
-        "src/service/proto.zig",
-        "src/service/idle.zig",
-        "src/main.zig",
-        "src/audit.zig",
-        "src/root.zig",
-        "src/error.zig",
-        "src/crypto",
-        "src/store",
-        "src/policy",
-        "src/tui",
-        "build.zig",
-        ".versions.json"
-      ],
-      "extra-files": [
-        {
-          "type": "json",
-          "path": ".versions.json",
-          "jsonpath": "$.linux"
-        }
-      ],
-      "changelog-sections": [
-        { "type": "feat", "section": "Features" },
-        { "type": "fix", "section": "Bug Fixes" },
-        { "type": "perf", "section": "Performance" },
-        { "type": "security", "section": "Security" },
-        { "type": "docs", "section": "Documentation", "hidden": true },
-        { "type": "chore", "section": "Misc", "hidden": true },
-        { "type": "refactor", "section": "Refactor", "hidden": true },
-        { "type": "test", "section": "Tests", "hidden": true },
-        { "type": "build", "section": "Build", "hidden": true },
-        { "type": "ci", "section": "CI", "hidden": true },
-        { "type": "style", "section": "Style", "hidden": true }
-      ]
-    },
-    "components/windows": {
-      "release-type": "simple",
-      "component": "cora-windows",
-      "package-name": "cora-windows",
-      "tag-format": "cora-windows-v${version}",
-      "include-component-in-tag": false,
-      "include-v-in-tag": false,
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": false,
-      "draft": true,
-      "force-tag-creation": true,
-      "prerelease": false,
-      "changelog-path": "CHANGELOG.md",
-      "include-paths": [
-        "components/windows",
-        "src/identity/windows.zig",
-        "src/service/pipe_windows.zig",
-        "src/service/spawn_windows.zig",
-        "src/identity/identity.zig",
-        "src/service/service.zig",
-        "src/service/client.zig",
-        "src/service/proto.zig",
-        "src/service/idle.zig",
-        "src/main.zig",
-        "src/audit.zig",
-        "src/root.zig",
-        "src/error.zig",
-        "src/crypto",
-        "src/store",
-        "src/policy",
-        "src/tui",
-        "build.zig",
-        ".versions.json"
-      ],
-      "extra-files": [
-        {
-          "type": "json",
-          "path": ".versions.json",
-          "jsonpath": "$.windows"
+          "type": "generic",
+          "path": "build.zig.zon"
         }
       ],
       "changelog-sections": [
