@@ -233,17 +233,24 @@ summary below is enough to understand how your commits land.
    `CHANGELOG.md`, and the manifest.
 3. A maintainer merges that PR. `release-please` creates the upstream
    tag `v<X.Y.Z>`.
-4. The `mirror-tags` job (in `release-please.yml`) diffs the new tag
-   against the previous `v*` tag and pushes per-OS mirror tags
-   (`cora-{macos,linux,windows}-v<X.Y.Z>`) for the affected OS(es):
-   - `src/identity/macos.zig` only → only `cora-macos-v…` pushed.
-   - `src/identity/{windows.zig,…pipe_windows.zig,spawn_windows.zig}`
-     only → only `cora-windows-v…` pushed.
-   - `src/identity/linux.zig` only → only `cora-linux-v…` pushed.
-   - Anything else in `src/`, `build.zig`, `packaging/`, etc. → all
-     three mirrors pushed.
-   - Docs / templates / CHANGELOG-only diffs → no mirror pushed (the
-     bump still moves `build.zig.zon`, but there is nothing to rebuild).
+4. The `mirror-tags` job (in `release-please.yml`) decides which
+   per-OS mirror tags (`cora-{macos,linux,windows}-v<X.Y.Z>`) to push.
+   For each OS it:
+   1. Honors a `Release-Os: <os>[,<os>...]` footer in the release-range
+      commits, if present (skips the diff classifier).
+   2. Otherwise diffs the new `v*` tag against **that OS's own** last
+      `cora-<os>-v*` tag (not the previous upstream `v*` — this lets an
+      OS that skipped a release catch up the next time something
+      relevant lands).
+   3. Runs the diff through
+      `grep -qE -f .github/release-paths/<os>.txt`; any match pushes
+      the mirror tag.
+
+   The path patterns are version-controlled regex files — see
+   [`.github/release-paths/README.md`](.github/release-paths/README.md).
+   Bookkeeping paths like `build.zig.zon`, `CHANGELOG.md`, and top-level
+   docs are excluded from every OS's regex so release-please's own
+   bookkeeping bump never spuriously fans out.
 5. `release.yml` fires per mirror tag and scopes its build matrix to
    the OS embedded in the tag prefix.
 6. Distribution is per-OS: stable `cora-macos-v*` updates Homebrew;
@@ -267,15 +274,30 @@ affected OS(es).
 
 ### Forcing or skipping a mirror tag
 
-The mirror-tag classifier picks per file path, not intent. To override:
+The mirror-tag classifier reads regex files in
+[`.github/release-paths/{macos,linux,windows}.txt`](.github/release-paths/)
+and per-OS last-tag diff baselines. To override per release:
+
+- **Restrict to specific OS(es).** Add a `Release-Os:` footer to any
+  commit in the release range, e.g.:
+
+  ```
+  fix(crypto): tighten nonce derivation for Windows pipe handshake
+
+  Release-Os: windows
+  ```
+
+  Multiple OSes go comma-separated (`Release-Os: macos,linux`). The
+  fan-out step honors the union of footers across the range and skips
+  the diff classifier when any are present.
 
 - **Force all three** even if the diff is OS-scoped: re-run the
-  `release-please.yml` workflow's `mirror-tags` job, or push the three
-  mirror tags by hand (see RELEASING.md).
-- **Skip a specific OS** that was auto-tagged: delete the mirror tag
-  and its drafted GitHub release for that OS before the maintainer
-  marks the release published. The upstream `v*` tag stays — only the
-  per-OS ship is skipped.
+  `release-please.yml` workflow's `mirror-tags` job, or push the
+  three mirror tags by hand.
+
+- **Adjust the classifier itself**: edit the regex files in
+  `.github/release-paths/`. Patterns are POSIX ERE, one per line.
+  See [`.github/release-paths/README.md`](.github/release-paths/README.md).
 
 ### Promoting an alpha to stable
 

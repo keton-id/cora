@@ -39,21 +39,67 @@ This document covers the day-to-day flow and the rarer overrides.
 ## How the mirror-tag step decides which OS(s) ship
 
 After release-please opens its release, the `mirror-tags` job in
-`release-please.yml` diffs the new `v*` tag against the previous `v*`
-and classifies each changed path:
+`release-please.yml` iterates `macos / linux / windows`. For each OS:
+
+1. **`Release-Os:` footer override.** If any commit in the range
+   between the previous `v*` and the new `v*` carries a
+   `Release-Os: <os>[,<os>...]` footer, only the listed OSes get a
+   mirror tag. The diff classifier is skipped.
+2. **First-ever mirror tag** for this OS → tag (bootstrap case).
+3. **Diff vs this OS's own last mirror tag.** Use the OS's own last
+   `cora-<os>-v*` tag as the baseline (not the previous upstream
+   `v*`), so an OS that skipped a release still catches up the next
+   time something relevant changes.
+4. Run `git diff --name-only <prev_os_tag>..<new_v_tag>` through
+   `grep -qE -f .github/release-paths/<os>.txt`. If any changed
+   path matches any pattern in that file, push the mirror tag.
+
+The path patterns live in plain text files version-controlled at
+[`.github/release-paths/`](.github/release-paths/) — one per OS,
+documented in
+[`.github/release-paths/README.md`](.github/release-paths/README.md).
+Edit them directly when a new file class needs to land in a release.
+
+OS-exclusive paths:
 
 - `src/identity/macos.zig` → macOS only.
 - `src/identity/linux.zig` → Linux only.
 - `src/identity/windows.zig`, `src/service/pipe_windows.zig`,
   `src/service/spawn_windows.zig` → Windows only.
-- Anything else under `src/`, `build.zig`, `build.zig.zon`, scripts,
-  packaging, or workflow YAML → shared, all three OS get a mirror.
-- Pure docs (`README.md`, `CHANGELOG.md`, `docs/**`, `LICENSE`,
-  templates) → ignored, no rebuild triggered.
 
-A safety net falls back to all three OS if the classifier sees no
-OS-relevant change (so a `Release-As:`-only version bump still ships
-binaries on every OS).
+Shared paths appear in all three regex files; bookkeeping paths
+(`build.zig.zon`, `CHANGELOG.md`, top-level docs, PR/issue templates,
+release-please config) appear in none — release-please modifies them
+every release but the binary output does not change.
+
+### `Release-Os:` footer
+
+Use the footer in any commit's body to restrict the next release
+explicitly:
+
+```
+fix(crypto): tighten nonce derivation for Windows pipe handshake
+
+The bug only manifests on Windows because <…>.
+
+Release-Os: windows
+```
+
+Multiple OSes go comma-separated (`Release-Os: macos,linux`). The
+footer is case-insensitive. If multiple commits in the same range
+each carry footers, the union is taken. Use `Release-Os:` when the
+diff would over-fire — e.g. you touched shared code only to land
+fixtures or types but the runtime behavior is windows-only.
+
+### Forcing all three despite a narrow diff
+
+Either:
+
+- Push the three mirror tags by hand on the upstream commit, or
+- Re-run the `release-please.yml` workflow's `mirror-tags` job
+  manually after editing
+  `.github/release-paths/<os>.txt` (e.g. add a temporary `^README\.md$`
+  if you want the docs commit to fan out anyway).
 
 ## How release-please decides what to bump
 
@@ -86,18 +132,10 @@ downstream in `mirror-tags`.
 
 ### Forcing a single-OS ship even when shared code changed
 
-Sometimes you want to ship only one OS for a release that *did* touch
-shared code (operationally, e.g. only macOS users are affected by a
-runtime regression). The mirror-tag classifier picks based on the diff,
-not intent, so:
-
-1. Let release-please merge as usual — the mirror-tag step pushes
-   tags for every OS the diff touched.
-2. After the fact, delete the mirror tags + their drafted releases for
-   the OSes you do not want to ship. The upstream `v*` tag stays;
-   release.yml does not re-fire for it on its own.
-
-This is rare. Document why in the PR description if you do it.
+Use the `Release-Os:` footer described above. The mirror-tag classifier
+checks the footer before consulting the diff, so a `Release-Os: macos`
+footer ships only the macOS mirror tag regardless of what the diff
+touched.
 
 ## Workflow walkthrough
 
@@ -152,25 +190,28 @@ don't match the host. The launcher (`bin/cr.js`) resolves the surviving
 subpackage at runtime and `spawnSync`s its prebuilt `cr` binary.
 
 - **Subpackage version** = the version of the mirror tag that produced
-  it (e.g. `cora-windows-v0.9.2` publishes `@keton-id/cora-win32-x64@0.9.2`).
-- **Meta version** = monotonic patch counter on the meta itself,
-  decoupled from `v*`. `prepare-meta.mjs` reads the current
-  `@keton-id/cora` version from the registry, bumps the patch, and
-  re-publishes with `optionalDependencies` queried live from npm for
-  each of the six subpackages. This guarantees publishes are monotonic
-  even when the OSes drift apart on subpackage version (e.g. macOS at
-  0.10.0, Linux at 0.9.5 — meta still publishes cleanly, pinning each
-  to its own current value).
+  it (e.g. `cora-windows-v0.9.2` publishes
+  `@keton-id/cora-win32-x64@0.9.2`).
+- **Meta version** = the upstream release semver (e.g. `0.9.2`). Every
+  release is a new version → meta publishes are monotonic by
+  construction, no 409s and no decoupled counter to keep in sync. The
+  meta version is passed via `--version` from `release.yml`, not derived
+  from `.versions.json` or read back from the registry.
+- **`optionalDependencies` pins** are queried live from the npm registry
+  for each of the six `@keton-id/cora-<platform>-<arch>` packages
+  (`npm view ... dist-tags.latest`). An out-of-step OS release ships
+  cleanly because every other OS keeps its existing registry version in
+  the pin map; only the OSes that just published this release have
+  their pin advance.
 - **Concurrency.** `publish-npm-meta` is in a workflow concurrency group
   (`npm-meta`, `cancel-in-progress: false`). GitHub may cancel a queued
   run if a third is queued behind it; that is OK here because
   `prepare-meta.mjs` reads npm state at execution time — the surviving
   run reflects every completed subpackage publish, including those of
   any cancelled-but-already-done runs.
-- **First-ever publish.** If neither the meta nor any subpackage exists
-  on npm, the meta publish refuses (the
-  `no subpackages published yet` guard in `prepare-meta.mjs`); push a
-  full-3-OS stable first.
+- **First-ever publish.** If no subpackage exists on the registry yet,
+  the meta publish refuses (the `no subpackages published yet` guard in
+  `prepare-meta.mjs`); push a full-3-OS stable first.
 
 ## Re-running a failed release
 
