@@ -20,9 +20,10 @@ Examples:
 
 ## OS impact
 
-Cora releases each OS independently (`cora-macos-v*`, `cora-linux-v*`,
-`cora-windows-v*`). Tick the OS(s) this PR affects — release-please
-will bump the corresponding component(s) when this merges.
+Cora cuts one upstream version per release, then fans out per-OS
+mirror tags (`cora-macos-v*`, `cora-linux-v*`, `cora-windows-v*`) only
+for the OSes whose files changed. Tick the OS(s) this PR affects so
+reviewers can sanity-check the mirror-tag classifier:
 
 - [ ] macOS — touches `src/identity/macos.zig` or shared code
 - [ ] Linux — touches `src/identity/linux.zig` or shared code
@@ -30,11 +31,16 @@ will bump the corresponding component(s) when this merges.
       `src/service/pipe_windows.zig`, `src/service/spawn_windows.zig`,
       or shared code
 
-If you touched shared code but want release-please to bump fewer than
-three components, add a `Release-As:` footer in your commit message — e.g.
-`Release-As: cora-windows-v0.9.3`. See [CONTRIBUTING.md → Releasing](../CONTRIBUTING.md#releasing-maintainers-only)
-for the rules. Reviewer: confirm the OS scope above matches the
-files actually changed in the diff before approving.
+Anything outside `src/identity/{macos,linux,windows}.zig` and the
+two `src/service/*_windows.zig` files is considered shared, so all
+three OSes will get a mirror tag. Pure docs / template / CHANGELOG-only
+diffs don't trigger any mirror — release-please still bumps the
+version, but nothing is rebuilt.
+
+To force a specific version use the plain-semver `Release-As: X.Y.Z`
+footer; the mirror-tag step will still scope per-OS as above. See
+[CONTRIBUTING.md → Releasing](../CONTRIBUTING.md#releasing-maintainers-only)
+for the full rules.
 
 ## Changes
 

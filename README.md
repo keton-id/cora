@@ -136,10 +136,13 @@ skip the five that don't match your host, so only the matching prebuilt
 addon, no `vendor/` bundle. Only stable releases publish to npm;
 alphas stay on GitHub Releases.
 
-`@keton-id/cora`'s version tracks the freshest of the three per-OS
-versions, so `@latest` always pulls the newest binary available for
-your host. Each subpackage is independently versioned and pinned by
-the meta's `optionalDependencies`.
+`@keton-id/cora`'s version is a monotonic counter decoupled from the
+upstream `v*` tag — every npm publish bumps it so `@latest` always
+points at the freshest `optionalDependencies` map. Each subpackage is
+versioned independently and pinned by the meta to its actual current
+version on the registry (queried live at publish time), so an
+out-of-step per-OS release ships cleanly without forcing the other
+OSes to bump in lockstep.
 
 </details>
 
