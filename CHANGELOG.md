@@ -32,6 +32,13 @@ versioning works.
 The entries below were cut while Cora shipped as a single package under
 the `v*` tag prefix. They affect every OS unless explicitly noted.
 
+## [0.9.2-alpha.2](https://github.com/keton-id/cora/compare/v0.9.1-alpha.1...v0.9.2-alpha.2) (2026-06-06)
+
+
+### Misc
+
+* **release:** exercise per-OS release flow ([96ed461](https://github.com/keton-id/cora/commit/96ed46129304d462f327833aeed0cb1aee186659))
+
 ## [0.9.1-alpha.1](https://github.com/keton-id/cora/compare/v0.9.0-alpha.1...v0.9.1-alpha.1) (2026-06-04)
 
 
