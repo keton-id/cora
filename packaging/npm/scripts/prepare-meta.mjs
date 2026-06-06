@@ -2,22 +2,36 @@
 // Render the @keton-id/cora meta npm package ready for `npm publish`.
 //
 // Inputs:
-//   --versions <path>   Path to .versions.json at repo root. Holds the
-//                       three current per-OS versions managed by
-//                       release-please.
 //   --src <dir>         Source dir containing the meta template tree
 //                       (packaging/npm/meta).
 //   --out <dir>         Output dir for the rendered tree.
 //
-// The meta version is set to the maximum of the three per-OS semver
-// values so that `npm i -g @keton-id/cora@latest` always pulls the
-// freshest binary for the host. optionalDependencies are pinned to
-// the exact per-OS version: an older OS subpackage is not "latest" by
-// accident.
+// Versioning model (lockstep-by-state, not lockstep-by-tag):
+//
+// - The meta is a thin launcher whose only payload is the
+//   optionalDependencies map. We want every meta publish to reflect
+//   the CURRENT state of the six subpackages on npm, so that
+//   `npm i -g @keton-id/cora@latest` always pulls the freshest binary
+//   for the host. To support out-of-step per-OS releases (e.g. a
+//   Windows-only fix advances win32 subpackages while macOS / Linux
+//   stay where they were), the meta must be re-publishable without
+//   requiring all three OSes to bump in lockstep.
+//
+// - Meta version is therefore monotonic and decoupled from the
+//   `v*` upstream release version: read the current registry value
+//   for `@keton-id/cora`, bump the patch. On first ever publish
+//   (registry returns nothing), start at 0.0.1.
+//
+// - optionalDependencies pins are queried live from the npm registry
+//   for each of the six `@keton-id/cora-<platform>-<arch>` packages
+//   and pinned to their actual current version. If a subpackage has
+//   never been published, it is omitted; npm will then fall through
+//   to the meta launcher's "no prebuilt binary" error on that host.
 
 import { argv, exit, stderr } from "node:process";
 import { readFileSync, writeFileSync, mkdirSync, cpSync } from "node:fs";
 import { resolve, join } from "node:path";
+import { execSync } from "node:child_process";
 
 function fail(msg) {
   stderr.write(`prepare-meta: ${msg}\n`);
@@ -30,49 +44,72 @@ function arg(name) {
   return argv[idx + 1];
 }
 
-const versionsPath = resolve(arg("versions"));
 const srcDir = resolve(arg("src"));
 const outDir = resolve(arg("out"));
 
-const versions = JSON.parse(readFileSync(versionsPath, "utf8"));
-const { macos, linux, windows } = versions;
-if (!macos || !linux || !windows) fail(`incomplete .versions.json: ${JSON.stringify(versions)}`);
-
-// Pure-semver comparator. Pre-release suffixes (e.g. "-alpha.1") rank
-// below the same base version per semver 2.0.0. We restrict the meta
-// to stable, since prereleases never publish to npm — so all inputs
-// here should be plain X.Y.Z.
-function cmp(a, b) {
-  const [av, ap = ""] = a.split("-");
-  const [bv, bp = ""] = b.split("-");
-  const aa = av.split(".").map(Number);
-  const bb = bv.split(".").map(Number);
-  for (let i = 0; i < 3; i++) {
-    if (aa[i] !== bb[i]) return aa[i] - bb[i];
+// npm view returns empty stdout (and exit 0) when a package does not exist
+// and a non-zero exit with "E404" when the version is missing. We only
+// need the happy path — return null on any failure.
+function npmViewVersion(name) {
+  try {
+    const out = execSync(`npm view ${JSON.stringify(name)} version`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
   }
-  // Equal base versions: stable (no suffix) > prerelease.
-  if (ap === "" && bp !== "") return 1;
-  if (ap !== "" && bp === "") return -1;
-  return ap.localeCompare(bp);
 }
 
-const metaVersion = [macos, linux, windows].sort(cmp).at(-1);
+function bumpPatch(semver) {
+  // Strip any prerelease/build metadata before bumping — the meta is
+  // publish-only, never preserves a prerelease channel.
+  const base = semver.split("-")[0].split("+")[0];
+  const parts = base.split(".").map((n) => parseInt(n, 10));
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) {
+    fail(`cannot bump non-semver meta version: ${semver}`);
+  }
+  parts[2] += 1;
+  return parts.join(".");
+}
+
+const META_NAME = "@keton-id/cora";
+const SUBPACKAGES = [
+  "@keton-id/cora-darwin-x64",
+  "@keton-id/cora-darwin-arm64",
+  "@keton-id/cora-linux-x64",
+  "@keton-id/cora-linux-arm64",
+  "@keton-id/cora-win32-x64",
+  "@keton-id/cora-win32-arm64",
+];
+
+const currentMeta = npmViewVersion(META_NAME);
+const metaVersion = currentMeta ? bumpPatch(currentMeta) : "0.0.1";
+stderr.write(`current meta: ${currentMeta ?? "<unpublished>"} -> bumping to ${metaVersion}\n`);
+
+const optionalDependencies = {};
+for (const name of SUBPACKAGES) {
+  const v = npmViewVersion(name);
+  if (v) {
+    optionalDependencies[name] = v;
+    stderr.write(`  pin ${name}@${v}\n`);
+  } else {
+    stderr.write(`  skip ${name} (not yet published)\n`);
+  }
+}
+
+if (Object.keys(optionalDependencies).length === 0) {
+  fail(`no subpackages published yet — refuse to publish meta with empty optionalDependencies`);
+}
 
 mkdirSync(outDir, { recursive: true });
 cpSync(srcDir, outDir, { recursive: true });
 
-// Patch package.json in the copied tree.
 const pkgPath = join(outDir, "package.json");
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 pkg.version = metaVersion;
-pkg.optionalDependencies = {
-  "@keton-id/cora-darwin-x64": macos,
-  "@keton-id/cora-darwin-arm64": macos,
-  "@keton-id/cora-linux-x64": linux,
-  "@keton-id/cora-linux-arm64": linux,
-  "@keton-id/cora-win32-x64": windows,
-  "@keton-id/cora-win32-arm64": windows,
-};
+pkg.optionalDependencies = optionalDependencies;
 writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 
-stderr.write(`prepared @keton-id/cora@${metaVersion} (macos=${macos} linux=${linux} windows=${windows}) at ${outDir}\n`);
+stderr.write(`prepared ${META_NAME}@${metaVersion} at ${outDir}\n`);

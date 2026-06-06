@@ -28,6 +28,7 @@ import { mkdirSync, readFileSync, writeFileSync, chmodSync, existsSync, readdirS
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 function fail(msg) {
   stderr.write(`prepare-subpackage: ${msg}\n`);
@@ -71,6 +72,19 @@ if (!existsSync(artifact)) {
   fail(`expected artifact not found: ${artifact}`);
 }
 
+// Verify the artifact against its .sha256 sidecar before extracting.
+// The sidecar comes from the same workflow run, but for a security-posture
+// project we still re-hash here so the publish path has no implicit trust
+// in either the artifact upload step or its consumer in this job.
+const sidecar = `${artifact}.sha256`;
+if (!existsSync(sidecar)) fail(`expected sidecar not found: ${sidecar}`);
+const expectedSha = readFileSync(sidecar, "utf8").trim().split(/\s+/)[0];
+const actualSha = createHash("sha256").update(readFileSync(artifact)).digest("hex");
+if (expectedSha !== actualSha) {
+  fail(`SHA256 mismatch for ${artifact}\n  expected: ${expectedSha}\n  actual:   ${actualSha}`);
+}
+stderr.write(`sha256 verified for ${artifact}\n`);
+
 mkdirSync(join(outDir, "bin"), { recursive: true });
 
 // Extract the cr binary out of the artifact straight into <out>/bin/.
@@ -82,12 +96,15 @@ if (isWindows) {
 }
 
 // Render package.json from template with platform/arch/version filled in.
+// Note: no `bin` field — the binary is intentionally not linked by npm.
+// The meta package's launcher (`@keton-id/cora`'s bin/cr.js) resolves
+// this subpackage and execs the binary at `bin/<exe>` directly. Having
+// `bin` here too would conflict with the meta's `cr` link on globals.
 const pkgTemplate = readFileSync(join(templateDir, "package.json"), "utf8");
 const pkg = JSON.parse(pkgTemplate);
 pkg.name = `@keton-id/cora-${platform}-${arch}`;
 pkg.version = version;
 pkg.description = `Prebuilt cr binary for ${platform}/${arch}. Consumed via @keton-id/cora.`;
-pkg.bin = { cr: `bin/${exeName}` };
 pkg.os = [platform];
 pkg.cpu = [arch];
 writeFileSync(join(outDir, "package.json"), JSON.stringify(pkg, null, 2) + "\n");

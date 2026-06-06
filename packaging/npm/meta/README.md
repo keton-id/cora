@@ -63,9 +63,16 @@ cr help <subcommand> <action> # deep
 
 ## Versioning
 
-Each OS (macOS / Linux / Windows) is released on its own cadence under its own tag prefix (`cora-macos-v*`, `cora-linux-v*`, `cora-windows-v*`). The corresponding subpackages on npm are versioned independently. The meta `@keton-id/cora` version tracks the most recent stable across all three, so `npm i -g @keton-id/cora@latest` always pulls the freshest binary for your host.
+Every Cora release ships under one upstream `v*` tag and up to three per-OS mirror tags (`cora-macos-v*`, `cora-linux-v*`, `cora-windows-v*`) — only OSes whose code actually changed get a mirror, so e.g. a Windows-only fix bumps only the win32 subpackages.
 
-Pin a specific stable build with `@<version>` to keep an environment reproducible:
+The npm packages follow that shape:
+
+- `@keton-id/cora-<platform>-<arch>` (subpackages) — versioned to the mirror tag that produced them. A subpackage version reports the actual `cr` version on its host.
+- `@keton-id/cora` (this meta) — versioned monotonically and decoupled from the upstream `v*` tag. Every publish bumps the meta's patch and re-pins `optionalDependencies` to whatever each subpackage's current registry version is. `@latest` therefore always pulls the freshest binary for your host, even when one OS skipped a release.
+
+`cr version` reports the subpackage's version (the one actually running on your machine), not the meta version.
+
+Pin a specific build with `@<version>` to keep an environment reproducible:
 
 ```sh
 npm i -g @keton-id/cora@1.0.0
