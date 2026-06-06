@@ -19,13 +19,13 @@ pub const Parsed = struct {
     secrets_ct: []const u8,
     secrets_tag: [aead.tag_len]u8,
 
-    pub fn additionalData(self: *const Parsed, buf: *[header_size]u8) []const u8 {
-        @memcpy(buf[0..magic.len], &magic);
-        buf[magic.len] = version;
-        @memcpy(buf[magic.len + 1 ..][0..derive.salt_len], &self.header.salt);
-        @memcpy(buf[magic.len + 1 + derive.salt_len ..][0..aead.nonce_len], &self.header.nonce);
-        return buf[0..];
-    }
+    // Audit-2026-06: removed the duplicate `additionalData` method. The
+    // canonical AEAD-AAD builder lives at `store.buildAad` and is the only
+    // one used by `createEncrypted` / `decrypt`. Keeping a second copy in
+    // `format.Parsed` invited silent drift: if either side ever changed
+    // the header layout (e.g. salt ordering, version byte), the AAD bytes
+    // computed at encrypt and decrypt time would diverge and `decrypt`
+    // would start returning AuthFailed for files we just wrote.
 };
 
 pub fn encode(

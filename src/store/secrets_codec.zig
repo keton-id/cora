@@ -14,7 +14,19 @@ pub fn decode(allocator: std.mem.Allocator, source: []const u8, out: *MemStore) 
     if (first != .object_begin) return CoraError.InvalidConfig;
 
     while (true) {
-        const tok = try scanner.nextAllocMax(allocator, .alloc_always, max_key_len);
+        // Audit-2026-06: Translate the JSON scanner's raw ValueTooLong into
+        // CoraError.InvalidConfig at the codec boundary. The input-boundary
+        // check in cmdSecretsSet / cmdSecretsDelete prevents new corruption,
+        // but any future caller that hands us data from a source other than
+        // argv (e.g. importing a vault from another tool) would otherwise
+        // see an unhandled std-lib error. `scanner.nextAllocMax` already
+        // caps allocation at max_key_len, so the post-decode length check
+        // below is defensive only — kept because it costs nothing and
+        // documents the invariant.
+        const tok = scanner.nextAllocMax(allocator, .alloc_always, max_key_len) catch |err| switch (err) {
+            error.ValueTooLong => return CoraError.InvalidConfig,
+            else => return err,
+        };
         switch (tok) {
             .object_end => return,
             .allocated_string => |key| {
