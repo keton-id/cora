@@ -4,7 +4,11 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const version = parseVersion(b);
+    // CI passes `-Dversion=<X.Y.Z>` so the binary reports the actual
+    // tagged release version rather than whatever build.zig.zon happens
+    // to hold. Local `zig build` (no -Dversion) falls back to scraping
+    // build.zig.zon, so `cr version` still works for from-source builds.
+    const version = b.option([]const u8, "version", "release version override (defaults to build.zig.zon)") orelse parseVersion(b);
     const commit = gitCommit(b);
     const build_date = buildDate(b);
 

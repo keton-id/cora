@@ -156,7 +156,11 @@ jobs:
           version: 0.16.0
 
       - name: Build
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+        # Pass the tag's version through to the binary so `cr version`
+        # reports the actual release, not whatever build.zig.zon happens
+        # to hold at the checked-out commit (which can drift from the
+        # mirror tag's release version for retags).
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} -Dversion=${{ needs.resolve.outputs.version }}
 
       - name: Package
         env:
@@ -430,13 +434,17 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Prepare meta tree
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          # prepare-meta.mjs queries the npm registry for the current
-          # subpackage versions (so it reflects whatever this run's
-          # subpackages just published, plus the other OSes' current
-          # state) and bumps the meta's own patch version monotonically.
+          # Meta version = release semver (lockstep with the mirror tag).
+          # prepare-meta.mjs queries the npm registry for each subpackage's
+          # current dist-tag `latest` so optionalDependencies always pins
+          # to whatever is actually on the registry — including the
+          # subpackages this run just published.
           node cora/packaging/npm/scripts/prepare-meta.mjs \
+            --version "$VERSION" \
             --src cora/packaging/npm/meta \
             --out meta
 
