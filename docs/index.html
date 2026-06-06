@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>cora — zero-knowledge secret injection for AI agents</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%F0%9F%A4%AB</text></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:ital,wght@0,200;0,300;0,400;0,500;1,300;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
@@ -102,7 +103,7 @@
   }
   .brand { display: flex; align-items: baseline; gap: 10px; font-family: var(--serif); font-size: 21px; font-weight: 400; letter-spacing: -0.01em; }
   .brand b { font-weight: 500; }
-  .brand .glyph { color: var(--blood); font-family: var(--mono); font-size: 15px; transform: translateY(-1px); }
+  .brand .glyph { font-family: var(--sans); font-size: 18px; transform: translateY(-1px); line-height: 1; }
   .nav-links { display: flex; gap: 30px; align-items: center; }
   .nav-links a { font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.04em; color: var(--ink-dim); transition: color .18s; }
   .nav-links a:hover { color: var(--ink); }
@@ -287,6 +288,8 @@
   .os-seg button .det { font-size: 10px; color: var(--blood); letter-spacing: 0.1em; }
   .os-seg button:hover { color: var(--ink-dim); }
   .os-seg button.active { color: var(--ink); background: var(--bg-2); }
+  .os-seg button .osbadge { height: 16px; margin-left: 8px; vertical-align: middle; border-radius: 2px; opacity: 0.85; }
+  .os-seg button.active .osbadge { opacity: 1; }
   .tabbar button.hide { display: none; }
 
   /* ─── TUI showcase ───────────────────────────────── */
@@ -363,7 +366,7 @@
 
 <nav id="nav">
   <div class="nav-in">
-    <a href="#top" class="brand"><span class="glyph">█</span><b>cora</b></a>
+    <a href="#top" class="brand"><span class="glyph">🤫</span><b>cora</b></a>
     <div class="nav-links">
       <a href="#problem">The Problem</a>
       <a href="#fix">The Fix</a>
@@ -581,9 +584,9 @@
     </div>
     <div class="tabs reveal">
       <div class="os-seg" id="osSeg">
-        <button data-os="mac" class="active">macOS</button>
-        <button data-os="linux">Linux</button>
-        <button data-os="windows">Windows</button>
+        <button data-os="mac" class="active">macOS<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=cora-macos-*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
+        <button data-os="linux">Linux<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=cora-linux-*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
+        <button data-os="windows">Windows<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=cora-windows-*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
       </div>
       <div class="tabbar" id="tabbar">
         <button class="active" data-tab="script" data-os="mac linux">Install script<span class="rec">recommended</span></button>
