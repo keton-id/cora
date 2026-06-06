@@ -433,25 +433,21 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Prepare meta tree
+      - name: Prepare + publish meta
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          # Meta version = release semver (lockstep with the mirror tag).
-          # prepare-meta.mjs queries the npm registry for each subpackage's
-          # current dist-tag `latest` so optionalDependencies always pins
-          # to whatever is actually on the registry — including the
-          # subpackages this run just published.
+          # prepare-meta.mjs queries the npm registry for each
+          # subpackage's current dist-tag `latest`, renders the meta
+          # tree with version = release semver, and publishes — with a
+          # bump-on-conflict loop that absorbs the multi-OS race
+          # (three mirror tags at the same version → three parallel
+          # meta publishes at the same name@version). The first wins,
+          # the others either no-op (identical pins → idempotent
+          # success) or bump the patch and republish (different pins).
           node cora/packaging/npm/scripts/prepare-meta.mjs \
             --version "$VERSION" \
             --src cora/packaging/npm/meta \
             --out meta
-
-      - name: Publish meta to npm
-        working-directory: meta
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          npm publish --access public
