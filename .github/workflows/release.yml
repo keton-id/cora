@@ -261,6 +261,67 @@ jobs:
             gh release edit "$TAG" --draft=false --prerelease=false --repo "$GITHUB_REPOSITORY"
           fi
 
+  update-release-badge:
+    name: update README release badge
+    needs: [resolve, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Refresh per-OS badge JSON
+        env:
+          OS: ${{ needs.resolve.outputs.os }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          case "$OS" in
+            macos)
+              LABEL="macOS"
+              COLOR="0db7ed"
+              ;;
+            linux)
+              LABEL="Linux"
+              COLOR="fcc624"
+              ;;
+            windows)
+              LABEL="Windows"
+              COLOR="00a4ef"
+              ;;
+            *)
+              echo "unknown OS '$OS'" >&2
+              exit 1
+              ;;
+          esac
+
+          mkdir -p .github/badges
+          cat > ".github/badges/${OS}.json" <<EOF
+          {
+            "schemaVersion": 1,
+            "label": "${LABEL}",
+            "message": "v${VERSION}",
+            "color": "${COLOR}"
+          }
+          EOF
+
+      - name: Commit updated badge
+        env:
+          OS: ${{ needs.resolve.outputs.os }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- ".github/badges/${OS}.json"; then
+            echo "Badge unchanged; skipping commit."
+            exit 0
+          fi
+          git config user.email "actions@github.com"
+          git config user.name "github-actions[bot]"
+          git add ".github/badges/${OS}.json"
+          git commit -m "docs: update ${OS} release badge to v${VERSION}"
+          git push
+
   publish-homebrew:
     name: publish homebrew formula
     needs: [resolve, publish]

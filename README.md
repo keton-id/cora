@@ -4,14 +4,14 @@
 [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/keton-id/cora/pulls)
 
-[![macOS](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-macos-v*&label=macOS&color=0db7ed&logo=apple&logoColor=white)](https://github.com/keton-id/cora/releases?q=cora-macos-)
-[![Linux](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-linux-v*&label=Linux&color=fcc624&logo=linux&logoColor=black)](https://github.com/keton-id/cora/releases?q=cora-linux-)
-[![Windows](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-windows-v*&label=Windows&color=00a4ef&logo=windows&logoColor=white)](https://github.com/keton-id/cora/releases?q=cora-windows-)
+[![macOS](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/macos.json)](https://github.com/keton-id/cora/releases?q=cora-macos-)
+[![Linux](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/linux.json)](https://github.com/keton-id/cora/releases?q=cora-linux-)
+[![Windows](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/windows.json)](https://github.com/keton-id/cora/releases?q=cora-windows-)
 
 <!--
-Per-OS version badges auto-update from GitHub Releases. Each badge tracks
-the newest release whose tag matches `cora-{os}-v*` (prereleases included).
-After v1.0, drop `include_prereleases` to track stable only.
+Per-OS version badges auto-update from repo-managed JSON files that the
+release workflow refreshes after each publish. This avoids Shields filter
+quirks and keeps the visible value to a clean `vX.Y.Z[-suffix]`.
 -->
 
 
