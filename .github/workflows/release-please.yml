@@ -60,7 +60,14 @@ jobs:
             # Collect every `Release-Os:` footer value across all commits
             # since the previous upstream release. Comma-separated lists
             # are split, whitespace stripped, deduped.
-            OS_OVERRIDE="$(git log "${PREV_V}..${NEW_TAG}" --format=%B \
+            #
+            # The `|| true` at the end of the subshell is load-bearing:
+            # under `set -o pipefail`, when no commit in the range
+            # carries a `Release-Os:` footer the `grep -iE` step exits 1
+            # (no match) which propagates through the pipeline and
+            # would otherwise trip `set -e` on the assignment. The
+            # empty-string output is the legitimate "no override" signal.
+            OS_OVERRIDE="$( ( git log "${PREV_V}..${NEW_TAG}" --format=%B \
               | grep -iE '^Release-Os:' \
               | sed -E 's/^[Rr]elease-[Oo]s:[[:space:]]*//' \
               | tr ',' '\n' \
@@ -69,7 +76,7 @@ jobs:
               | grep -vE '^$' \
               | sort -u \
               | tr '\n' ' ' \
-              | sed -E 's/ $//')"
+              | sed -E 's/ $//' ) || true )"
           fi
 
           # Validate every override token. A typo like
