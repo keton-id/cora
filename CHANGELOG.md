@@ -16,21 +16,13 @@ by hand.
 | Windows | [![Windows](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-windows-v*&label=%20&color=00a4ef)](https://github.com/keton-id/cora/releases?q=cora-windows-) | `cora-windows-v*`  |
 
 <!--
-Badges read GitHub Releases live, so this table refreshes itself whenever
-release-please cuts a new per-OS tag. Versions older than the OS split
-(`v0.9.1-alpha.1` and earlier) appear under the "Pre-OS-split history"
-section below.
+The badge cells read GitHub Releases live, so this table refreshes
+itself whenever a `cora-{os}-v*` mirror tag lands. The numbered
+sections below are release-please's per-`v*`-cut notes; each one
+fans out to up to three per-OS mirror tags / GitHub Releases via the
+mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
+model.
 -->
-
-Per-OS release notes are interleaved by date below. Each section header
-carries the full tag (e.g. `cora-macos-v0.9.2-alpha.1`) so you can filter
-visually by OS. See [RELEASING.md](./RELEASING.md) for how the per-OS
-versioning works.
-
-## Pre-OS-split history
-
-The entries below were cut while Cora shipped as a single package under
-the `v*` tag prefix. They affect every OS unless explicitly noted.
 
 ## [0.9.2-alpha.2](https://github.com/keton-id/cora/compare/v0.9.1-alpha.1...v0.9.2-alpha.2) (2026-06-06)
 
