@@ -72,6 +72,22 @@ jobs:
               | sed -E 's/ $//')"
           fi
 
+          # Validate every override token. A typo like
+          # `Release-Os: windws` would otherwise activate the override
+          # and skip every OS, producing a green release that ships
+          # nothing — fail loudly instead.
+          if [ -n "$OS_OVERRIDE" ]; then
+            for tok in $OS_OVERRIDE; do
+              case "$tok" in
+                macos|linux|windows) ;;
+                *)
+                  echo "error: invalid Release-Os value '$tok' (expected one of: macos, linux, windows)" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+          fi
+
           echo "value=${OS_OVERRIDE}" >> "$GITHUB_OUTPUT"
           if [ -n "$OS_OVERRIDE" ]; then
             echo "Release-Os override active: ${OS_OVERRIDE}"
