@@ -32,6 +32,13 @@ versioning works.
 The entries below were cut while Cora shipped as a single package under
 the `v*` tag prefix. They affect every OS unless explicitly noted.
 
+## [0.9.3-alpha.2](https://github.com/keton-id/cora/compare/v0.9.2-alpha.2...v0.9.3-alpha.2) (2026-06-06)
+
+
+### Bug Fixes
+
+* **ci:** guard Release-Os: extraction pipeline against grep no-match ([#52](https://github.com/keton-id/cora/issues/52)) ([c75757d](https://github.com/keton-id/cora/commit/c75757df44e8b662c79faa68e2a0096f5c8134a9))
+
 ## [0.9.2-alpha.2](https://github.com/keton-id/cora/compare/v0.9.1-alpha.1...v0.9.2-alpha.2) (2026-06-06)
 
 
