@@ -432,8 +432,11 @@ jobs:
       - name: Prepare meta tree
         run: |
           set -euo pipefail
+          # prepare-meta.mjs queries the npm registry for the current
+          # subpackage versions (so it reflects whatever this run's
+          # subpackages just published, plus the other OSes' current
+          # state) and bumps the meta's own patch version monotonically.
           node cora/packaging/npm/scripts/prepare-meta.mjs \
-            --versions cora/.versions.json \
             --src cora/packaging/npm/meta \
             --out meta
 
