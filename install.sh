@@ -100,28 +100,47 @@ resolve_tag() {
         return
     fi
 
-    # Pull the GitHub release tag stream and filter to this OS's prefix.
-    # `releases/latest` returns the most recent stable across ALL OS
-    # streams, which is wrong for a per-OS install — so we always query
-    # the paginated list and filter ourselves.
-    tags="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
-        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' \
-        | grep -E -- "^${prefix}")"
+    # Pull the GitHub release tag stream once and try the per-OS prefix
+    # first. `releases/latest` returns the most recent stable across all
+    # OS streams, which is wrong for a per-OS install — so we always
+    # paginate and filter ourselves.
+    all_tags="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p')"
 
-    case "$CHANNEL" in
-        stable)
-            # Stable = no dash-suffix after the version.
-            printf '%s' "$tags" \
-                | grep -E -- "^${prefix}[0-9]+\.[0-9]+\.[0-9]+$" \
-                | head -n 1
-            ;;
-        alpha|beta|rc)
-            printf '%s' "$tags" \
-                | grep -E -- "^${prefix}[0-9]+\.[0-9]+\.[0-9]+-${CHANNEL}\." \
-                | head -n 1
-            ;;
-        *) echo "unknown channel: $CHANNEL" >&2; exit 1;;
-    esac
+    pick_tag() {
+        # Args: <prefix> <stable_re> <prerelease_re>
+        _prefix="$1"; _stable="$2"; _pre="$3"
+        case "$CHANNEL" in
+            stable)
+                printf '%s' "$all_tags" \
+                    | grep -E -- "^${_prefix}${_stable}\$" \
+                    | head -n 1
+                ;;
+            alpha|beta|rc)
+                printf '%s' "$all_tags" \
+                    | grep -E -- "^${_prefix}${_pre}" \
+                    | head -n 1
+                ;;
+            *) echo "unknown channel: $CHANNEL" >&2; exit 1;;
+        esac
+    }
+
+    # Per-OS stream first.
+    tag="$(pick_tag "$prefix" "[0-9]+\.[0-9]+\.[0-9]+" "[0-9]+\.[0-9]+\.[0-9]+-${CHANNEL}\.")"
+    if [ -n "$tag" ]; then
+        printf '%s' "$tag"
+        return
+    fi
+
+    # Fallback: legacy bare `v*` releases from before the OS-split.
+    # These still ship the per-target tarballs we need (the artifact
+    # filename is OS-agnostic, e.g. `cr-${version}-aarch64-macos.tar.gz`)
+    # so the download path further down works either way.
+    tag="$(pick_tag "v" "[0-9]+\.[0-9]+\.[0-9]+" "[0-9]+\.[0-9]+\.[0-9]+-${CHANNEL}\.")"
+    if [ -n "$tag" ]; then
+        echo "note: no ${prefix}* release found — falling back to legacy ${tag}" >&2
+    fi
+    printf '%s' "$tag"
 }
 
 main() {
@@ -132,8 +151,14 @@ main() {
         echo "could not resolve a release for os='${os}' channel='${CHANNEL}'" >&2
         exit 1
     fi
-    # Strip the cora-<os>-v prefix to get the bare semver used in artifact names.
-    version="${tag#cora-${os}-v}"
+    # Strip whichever prefix the resolver returned to get the bare
+    # semver used in artifact names. Mirror tags are `cora-<os>-v<X.Y.Z>`;
+    # legacy fallbacks are `v<X.Y.Z>`.
+    case "$tag" in
+        cora-*-v*) version="${tag##*-v}" ;;
+        v*)        version="${tag#v}" ;;
+        *)         echo "unrecognised tag shape: $tag" >&2; exit 1;;
+    esac
     artifact="cr-${version}-${target}.tar.gz"
     base_url="https://github.com/${REPO}/releases/download/${tag}"
 
