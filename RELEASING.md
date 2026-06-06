@@ -86,10 +86,23 @@ Release-Os: windows
 ```
 
 Multiple OSes go comma-separated (`Release-Os: macos,linux`). The
-footer is case-insensitive. If multiple commits in the same range
-each carry footers, the union is taken. Use `Release-Os:` when the
-diff would over-fire — e.g. you touched shared code only to land
-fixtures or types but the runtime behavior is windows-only.
+footer is case-insensitive. Unknown tokens (e.g. typos like
+`Release-Os: windws`) hard-fail the workflow — a green release that
+ships zero binaries is the worst possible outcome here.
+
+**Scope: the footer applies to the whole release window**, not just
+to its own commit. The fan-out step scans every commit in
+`previous-v..new-v` for `Release-Os:` footers and takes the union; if
+any footer is present, the diff classifier is skipped entirely. So
+if commit A carries `Release-Os: windows` and commit B in the same
+range silently touches macOS-only code, **macOS is suppressed for
+this release** — the per-OS catch-up on the next release will pick it
+up, because the diff baseline for each OS is its own last mirror tag,
+not the upstream `v*`.
+
+Use `Release-Os:` when the diff would over-fire — e.g. you touched
+shared code only to land fixtures or types but the runtime behavior is
+windows-only.
 
 ### Forcing all three despite a narrow diff
 
@@ -192,11 +205,18 @@ subpackage at runtime and `spawnSync`s its prebuilt `cr` binary.
 - **Subpackage version** = the version of the mirror tag that produced
   it (e.g. `cora-windows-v0.9.2` publishes
   `@keton-id/cora-win32-x64@0.9.2`).
-- **Meta version** = the upstream release semver (e.g. `0.9.2`). Every
-  release is a new version → meta publishes are monotonic by
-  construction, no 409s and no decoupled counter to keep in sync. The
-  meta version is passed via `--version` from `release.yml`, not derived
-  from `.versions.json` or read back from the registry.
+- **Meta version** = the upstream release semver (e.g. `0.9.2`) for
+  the first publisher of that release. A coordinated multi-OS stable
+  (e.g. `1.0.0` fanning out to all three mirror tags) fires three
+  parallel meta publishes against the same `@keton-id/cora@1.0.0`;
+  the concurrency group serializes them and the bump-on-conflict
+  loop in `prepare-meta.mjs` handles the rest: identical pins → the
+  losing run no-ops idempotently; different pins → the loser
+  republishes at the next patch (e.g. `1.0.1`). The published
+  version therefore *can* be a patch ahead of the release semver in
+  these cases — `@latest` still points at the freshest pin map, but
+  pinning to `@1.0.0` exactly may resolve to slightly older pins
+  than `@1.0.1`.
 - **`optionalDependencies` pins** are queried live from the npm registry
   for each of the six `@keton-id/cora-<platform>-<arch>` packages
   (`npm view ... dist-tags.latest`). An out-of-step OS release ships

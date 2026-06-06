@@ -152,10 +152,13 @@ main() {
         exit 1
     fi
     # Strip whichever prefix the resolver returned to get the bare
-    # semver used in artifact names. Mirror tags are `cora-<os>-v<X.Y.Z>`;
-    # legacy fallbacks are `v<X.Y.Z>`.
+    # semver used in artifact names. `${tag#cora-*-v}` removes the
+    # SHORTEST `cora-*-v` prefix (not longest) so a prerelease
+    # identifier containing `-v` later in the string — e.g.
+    # `cora-macos-v1.0.0-vendor.1` — keeps the `vendor.1` suffix
+    # intact.
     case "$tag" in
-        cora-*-v*) version="${tag##*-v}" ;;
+        cora-*-v*) version="${tag#cora-*-v}" ;;
         v*)        version="${tag#v}" ;;
         *)         echo "unrecognised tag shape: $tag" >&2; exit 1;;
     esac
