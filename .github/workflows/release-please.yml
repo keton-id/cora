@@ -12,6 +12,11 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+      sha: ${{ steps.release.outputs.sha }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -19,3 +24,148 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: .github/release-please-config.json
           manifest-file: .github/release-please-manifest.json
+
+  mirror-tags:
+    name: fan out per-OS mirror tags
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      # Tags must be pushed with the PAT — the default GITHUB_TOKEN does
+      # not retrigger downstream workflows, and release.yml listens on
+      # the `cora-{os}-v*` mirror tags this job is about to push.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.release-please.outputs.tag_name }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+      - name: Extract Release-Os override from commits in range
+        id: override
+        env:
+          NEW_TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # Previous upstream `v*` tag (plain semver, optionally with
+          # prerelease suffix). If none exists this is the first release —
+          # the per-OS loop will treat every OS as affected.
+          PREV_V="$(git tag --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$' \
+            | grep -v "^${NEW_TAG}$" \
+            | head -1 || true)"
+
+          OS_OVERRIDE=""
+          if [ -n "$PREV_V" ]; then
+            # Collect every `Release-Os:` footer value across all commits
+            # since the previous upstream release. Comma-separated lists
+            # are split, whitespace stripped, deduped.
+            OS_OVERRIDE="$(git log "${PREV_V}..${NEW_TAG}" --format=%B \
+              | grep -iE '^Release-Os:' \
+              | sed -E 's/^[Rr]elease-[Oo]s:[[:space:]]*//' \
+              | tr ',' '\n' \
+              | tr -d ' \t' \
+              | tr '[:upper:]' '[:lower:]' \
+              | grep -vE '^$' \
+              | sort -u \
+              | tr '\n' ' ' \
+              | sed -E 's/ $//')"
+          fi
+
+          # Validate every override token. A typo like
+          # `Release-Os: windws` would otherwise activate the override
+          # and skip every OS, producing a green release that ships
+          # nothing — fail loudly instead.
+          if [ -n "$OS_OVERRIDE" ]; then
+            for tok in $OS_OVERRIDE; do
+              case "$tok" in
+                macos|linux|windows) ;;
+                *)
+                  echo "error: invalid Release-Os value '$tok' (expected one of: macos, linux, windows)" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+          fi
+
+          echo "value=${OS_OVERRIDE}" >> "$GITHUB_OUTPUT"
+          if [ -n "$OS_OVERRIDE" ]; then
+            echo "Release-Os override active: ${OS_OVERRIDE}"
+          else
+            echo "No Release-Os override — using diff-based classification."
+          fi
+
+      - name: Fan out per-OS mirror tags
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          NEW_TAG: ${{ needs.release-please.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+          OS_OVERRIDE: ${{ steps.override.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          # SHA of the upstream tag (peel both annotated and lightweight).
+          SHA="$(git rev-parse "${NEW_TAG}^{commit}")"
+
+          push_mirror() {
+            os="$1"
+            mirror="cora-${os}-v${VERSION}"
+
+            EXISTING="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/${mirror}" \
+              --jq ".[] | select(.ref==\"refs/tags/${mirror}\") | .object.sha")"
+            if [ -n "$EXISTING" ]; then
+              echo "Mirror ${mirror} already exists at ${EXISTING}; skipping."
+              return 0
+            fi
+
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/${mirror}" -f sha="${SHA}"
+            echo "Pushed ${mirror} -> ${SHA}"
+          }
+
+          override_contains() {
+            os="$1"
+            [ -z "$OS_OVERRIDE" ] && return 1
+            case " ${OS_OVERRIDE} " in
+              *" ${os} "*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          for os in macos linux windows; do
+            # Release-Os: footer wins outright when present. The diff
+            # classifier is skipped for any OS not in the override list.
+            if [ -n "$OS_OVERRIDE" ]; then
+              if override_contains "$os"; then
+                echo "[$os] Release-Os override includes $os — tagging."
+                push_mirror "$os"
+              else
+                echo "[$os] Release-Os override is '$OS_OVERRIDE' — skipping."
+              fi
+              continue
+            fi
+
+            # Diff-based classification: compare against THIS OS's most
+            # recent mirror tag, not the upstream v* tag, so an OS that
+            # skipped a release still catches up the next time something
+            # relevant changes.
+            PREV_OS="$(git tag --sort=-v:refname -l "cora-${os}-v*" | head -1 || true)"
+
+            if [ -z "$PREV_OS" ]; then
+              echo "[$os] No previous mirror tag — first-ever release, tagging."
+              push_mirror "$os"
+              continue
+            fi
+
+            # POSIX ERE patterns in `.github/release-paths/<os>.txt`. If
+            # any changed path matches any line, tag the OS.
+            if git diff --name-only "${PREV_OS}..${SHA}" \
+                | grep -qE -f ".github/release-paths/${os}.txt"; then
+              echo "[$os] Diff vs ${PREV_OS} matches release-paths/${os}.txt — tagging."
+              push_mirror "$os"
+            else
+              echo "[$os] No ${os}-relevant changes since ${PREV_OS}."
+            fi
+          done
+
+          echo "Done. release.yml will fire per pushed mirror tag."

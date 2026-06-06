@@ -1,12 +1,36 @@
 # Changelog
 
-All notable changes to this project are documented here.
+All notable changes to Cora are documented here. This project follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html) and uses
+[Conventional Commits](https://www.conventionalcommits.org/). Entries below
+are generated automatically by
+[release-please](https://github.com/googleapis/release-please) — do not edit
+by hand.
 
-This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-and uses [Conventional Commits](https://www.conventionalcommits.org/). Entries
-below are generated automatically by
-[release-please](https://github.com/googleapis/release-please) — do not edit by
-hand.
+## Current versions
+
+| OS      | Latest release                                                                                                                                                                              | Tag prefix         |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| macOS   | [![macOS](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-macos-v*&label=%20&color=0db7ed)](https://github.com/keton-id/cora/releases?q=cora-macos-)     | `cora-macos-v*`    |
+| Linux   | [![Linux](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-linux-v*&label=%20&color=fcc624)](https://github.com/keton-id/cora/releases?q=cora-linux-)     | `cora-linux-v*`    |
+| Windows | [![Windows](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-windows-v*&label=%20&color=00a4ef)](https://github.com/keton-id/cora/releases?q=cora-windows-) | `cora-windows-v*`  |
+
+<!--
+Badges read GitHub Releases live, so this table refreshes itself whenever
+release-please cuts a new per-OS tag. Versions older than the OS split
+(`v0.9.1-alpha.1` and earlier) appear under the "Pre-OS-split history"
+section below.
+-->
+
+Per-OS release notes are interleaved by date below. Each section header
+carries the full tag (e.g. `cora-macos-v0.9.2-alpha.1`) so you can filter
+visually by OS. See [RELEASING.md](./RELEASING.md) for how the per-OS
+versioning works.
+
+## Pre-OS-split history
+
+The entries below were cut while Cora shipped as a single package under
+the `v*` tag prefix. They affect every OS unless explicitly noted.
 
 ## [0.9.1-alpha.1](https://github.com/keton-id/cora/compare/v0.9.0-alpha.1...v0.9.1-alpha.1) (2026-06-04)
 

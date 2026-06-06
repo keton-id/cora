@@ -3,7 +3,9 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      - 'cora-macos-v*'
+      - 'cora-linux-v*'
+      - 'cora-windows-v*'
   workflow_dispatch:
     inputs:
       release_channel:
@@ -15,12 +17,16 @@ on:
         required: true
         default: prerelease
       source_tag:
-        description: 'Source tag (e.g. v0.3.0-alpha.1). For release channel the suffix is stripped to derive the stable tag.'
+        description: 'Source tag (e.g. cora-macos-v0.3.0-alpha.1). For release channel the suffix is stripped to derive the stable tag.'
         required: true
         type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   resolve:
@@ -28,10 +34,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.value }}
+      os: ${{ steps.tag.outputs.os }}
+      version: ${{ steps.tag.outputs.version }}
       channel: ${{ steps.tag.outputs.channel }}
       prerelease: ${{ steps.tag.outputs.prerelease }}
+      matrix: ${{ steps.tag.outputs.matrix }}
     steps:
-      - name: Resolve tag and channel
+      - name: Resolve tag, OS, channel
         id: tag
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -48,23 +57,57 @@ jobs:
             SOURCE="$REF_NAME"
           fi
 
+          # Parse OS from the tag prefix: `cora-{os}-v...`.
+          case "$SOURCE" in
+            cora-macos-v*)   OS="macos" ;;
+            cora-linux-v*)   OS="linux" ;;
+            cora-windows-v*) OS="windows" ;;
+            *)
+              echo "error: unrecognised tag prefix in '$SOURCE' (expected cora-{macos|linux|windows}-v...)" >&2
+              exit 1
+              ;;
+          esac
+
+          PREFIX="cora-${OS}-v"
+          SOURCE_VERSION="${SOURCE#${PREFIX}}"
+
           if [ "$CHANNEL" = "release" ]; then
-            # Strip first dash-suffix: v0.3.0-alpha.1 -> v0.3.0
-            TAG="${SOURCE%%-*}"
+            # Strip first dash-suffix: 0.3.0-alpha.1 -> 0.3.0
+            VERSION="${SOURCE_VERSION%%-*}"
+            TAG="${PREFIX}${VERSION}"
           else
+            VERSION="$SOURCE_VERSION"
             TAG="$SOURCE"
           fi
 
-          if [[ "$TAG" == *-* ]]; then
+          # Prerelease iff stripped version (just the semver part) contains
+          # a dash — i.e. has a pre-release suffix like `-alpha.1`.
+          if [[ "$VERSION" == *-* ]]; then
             PRERELEASE="true"
           else
             PRERELEASE="false"
           fi
 
+          # Build matrix filtered to this OS only.
+          case "$OS" in
+            macos)
+              MATRIX='{"include":[{"target":"aarch64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"arm64"},{"target":"x86_64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"x64"}]}'
+              ;;
+            linux)
+              MATRIX='{"include":[{"target":"x86_64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"x64"},{"target":"aarch64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"arm64"}]}'
+              ;;
+            windows)
+              MATRIX='{"include":[{"target":"x86_64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"x64"},{"target":"aarch64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"arm64"}]}'
+              ;;
+          esac
+
           echo "value=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "os=${OS}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
           echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag=${TAG} channel=${CHANNEL:-tag-push} prerelease=${PRERELEASE}"
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=${TAG} os=${OS} version=${VERSION} channel=${CHANNEL:-tag-push} prerelease=${PRERELEASE}"
 
       - name: Create stable tag at source commit
         if: ${{ inputs.release_channel == 'release' && steps.tag.outputs.value != inputs.source_tag }}
@@ -76,9 +119,10 @@ jobs:
           set -euo pipefail
 
           # The /git/refs/tags/<name> endpoint does PREFIX matching: querying
-          # `v0.5.0` while `v0.5.0-alpha.1` exists returns an array and confuses
-          # both the SHA lookup (jq) and the existence check. Use matching-refs
-          # which always returns an array, then filter by exact ref name.
+          # `cora-macos-v0.5.0` while `cora-macos-v0.5.0-alpha.1` exists returns
+          # an array and confuses both the SHA lookup (jq) and the existence
+          # check. Use matching-refs which always returns an array, then
+          # filter by exact ref name.
           SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$SOURCE" \
             --jq ".[] | select(.ref==\"refs/tags/$SOURCE\") | .object.sha")
           if [ -z "$SHA" ]; then
@@ -101,20 +145,7 @@ jobs:
     needs: resolve
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-macos
-            runner: macos-latest
-          - target: x86_64-macos
-            runner: macos-latest
-          - target: x86_64-linux
-            runner: ubuntu-latest
-          - target: aarch64-linux
-            runner: ubuntu-latest
-          - target: x86_64-windows-gnu
-            runner: ubuntu-latest
-          - target: aarch64-windows-gnu
-            runner: ubuntu-latest
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -125,14 +156,17 @@ jobs:
           version: 0.16.0
 
       - name: Build
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+        # Pass the tag's version through to the binary so `cr version`
+        # reports the actual release, not whatever build.zig.zon happens
+        # to hold at the checked-out commit (which can drift from the
+        # mirror tag's release version for retags).
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} -Dversion=${{ needs.resolve.outputs.version }}
 
       - name: Package
         env:
-          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
           TARGET="${{ matrix.target }}"
           case "${TARGET}" in
             *-windows*)
@@ -168,6 +202,8 @@ jobs:
     environment: ${{ needs.resolve.outputs.prerelease == 'true' && 'pre-release' || 'release' }}
     outputs:
       tag: ${{ needs.resolve.outputs.tag }}
+      os: ${{ needs.resolve.outputs.os }}
+      version: ${{ needs.resolve.outputs.version }}
       prerelease: ${{ needs.resolve.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
@@ -189,13 +225,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          OS: ${{ needs.resolve.outputs.os }}
+          VERSION: ${{ needs.resolve.outputs.version }}
           PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         run: |
           set -euo pipefail
+          TITLE="Cora ${OS} v${VERSION}"
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             # Stable tag derived from a prerelease tag won't have a release-please draft.
             # Create a fresh draft so the upload step has something to clobber into.
-            FLAGS=(--draft --title "$TAG")
+            FLAGS=(--draft --title "$TITLE")
             if [ "$PRERELEASE" = "true" ]; then
               FLAGS+=(--prerelease)
             fi
@@ -222,55 +261,10 @@ jobs:
             gh release edit "$TAG" --draft=false --prerelease=false --repo "$GITHUB_REPOSITORY"
           fi
 
-  publish-npm:
-    name: publish npm package
-    needs: [resolve, publish]
-    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: cora
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Prepare npm tree
-        env:
-          TAG: ${{ needs.resolve.outputs.tag }}
-        run: |
-          set -euo pipefail
-          VERSION="${TAG#v}"
-          node cora/packaging/npm/scripts/prepare.mjs \
-            --version "$VERSION" \
-            --dist dist \
-            --npm cora/packaging/npm
-
-      - name: Pack preview (for the CI log)
-        working-directory: cora/packaging/npm
-        run: |
-          set -euo pipefail
-          npm pack --dry-run
-
-      - name: Publish to npm
-        working-directory: cora/packaging/npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          set -euo pipefail
-          npm publish --access public
-
   publish-homebrew:
     name: publish homebrew formula
     needs: [resolve, publish]
-    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
+    if: ${{ needs.resolve.outputs.os == 'macos' && needs.resolve.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -283,10 +277,9 @@ jobs:
 
       - name: Render formula
         env:
-          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
           chmod +x cora/scripts/render-homebrew.sh
           cora/scripts/render-homebrew.sh "$VERSION" dist > cora.rb
           echo "Rendered Formula/cora.rb:"
@@ -295,10 +288,9 @@ jobs:
       - name: Push to keton-id/homebrew-tap
         env:
           GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
-          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/keton-id/homebrew-tap.git" tap
           mkdir -p tap/Formula
           cp cora.rb tap/Formula/cora.rb
@@ -316,7 +308,7 @@ jobs:
   publish-scoop:
     name: publish scoop manifest
     needs: [resolve, publish]
-    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
+    if: ${{ needs.resolve.outputs.os == 'windows' && needs.resolve.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -329,10 +321,9 @@ jobs:
 
       - name: Render manifest
         env:
-          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
           chmod +x cora/scripts/render-scoop.sh
           cora/scripts/render-scoop.sh "$VERSION" dist > cora.json
           echo "Rendered bucket/cora.json:"
@@ -342,10 +333,9 @@ jobs:
       - name: Push to keton-id/scoop-bucket
         env:
           GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
-          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
           git clone "https://x-access-token:${GH_TOKEN}@github.com/keton-id/scoop-bucket.git" bucket
           mkdir -p bucket/bucket
           cp cora.json bucket/bucket/cora.json
@@ -359,3 +349,105 @@ jobs:
           git add bucket/cora.json
           git commit -m "cora ${VERSION}"
           git push
+
+  publish-linux:
+    name: publish linux (stub)
+    needs: [resolve, publish]
+    if: ${{ needs.resolve.outputs.os == 'linux' && needs.resolve.outputs.prerelease == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Note
+        run: |
+          # TODO(linux-dist): wire AUR and/or snapcraft publish steps here
+          # once an account + signing key are provisioned. Until then,
+          # Linux users consume the GitHub release tarballs directly.
+          echo "Linux stable release ${{ needs.resolve.outputs.version }}: no package-manager publish step configured yet."
+
+  publish-npm-subpackage:
+    name: publish npm subpackages (this OS)
+    needs: [resolve, publish]
+    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cora
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: cr-${{ matrix.target }}
+          path: dist
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Prepare subpackage tree
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          NPM_PLATFORM: ${{ matrix.npm_platform }}
+          NPM_ARCH: ${{ matrix.npm_arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          node cora/packaging/npm/scripts/prepare-subpackage.mjs \
+            --version "$VERSION" \
+            --platform "$NPM_PLATFORM" \
+            --arch "$NPM_ARCH" \
+            --target "$TARGET" \
+            --dist dist \
+            --out subpackage
+
+      - name: Publish subpackage to npm
+        working-directory: subpackage
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          npm publish --access public
+
+  publish-npm-meta:
+    name: publish npm meta package
+    needs: [resolve, publish, publish-npm-subpackage]
+    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Queue meta publishes globally so two concurrent OS releases can't
+    # race a non-monotonic version onto the registry.
+    concurrency:
+      group: npm-meta
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cora
+          ref: ${{ needs.resolve.outputs.tag }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Prepare + publish meta
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # prepare-meta.mjs queries the npm registry for each
+          # subpackage's current dist-tag `latest`, renders the meta
+          # tree with version = release semver, and publishes — with a
+          # bump-on-conflict loop that absorbs the multi-OS race
+          # (three mirror tags at the same version → three parallel
+          # meta publishes at the same name@version). The first wins,
+          # the others either no-op (identical pins → idempotent
+          # success) or bump the patch and republish (different pins).
+          node cora/packaging/npm/scripts/prepare-meta.mjs \
+            --version "$VERSION" \
+            --src cora/packaging/npm/meta \
+            --out meta

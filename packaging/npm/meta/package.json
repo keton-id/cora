@@ -1,6 +1,6 @@
 {
   "name": "@keton-id/cora",
-  "version": "0.0.0",
+  "version": "0.0.0-template",
   "description": "Zero-knowledge secret injection runtime for AI agents. The cr CLI never lets an agent process see secret values — only names; values are decrypted in service memory and injected directly into subprocess env.",
   "type": "module",
   "bin": {
@@ -8,7 +8,6 @@
   },
   "files": [
     "bin/",
-    "vendor/",
     "README.md"
   ],
   "engines": {
@@ -35,13 +34,12 @@
     "argon2",
     "xchacha20"
   ],
-  "os": [
-    "darwin",
-    "linux",
-    "win32"
-  ],
-  "cpu": [
-    "x64",
-    "arm64"
-  ]
+  "optionalDependencies": {
+    "@keton-id/cora-darwin-x64": "0.0.0-template",
+    "@keton-id/cora-darwin-arm64": "0.0.0-template",
+    "@keton-id/cora-linux-x64": "0.0.0-template",
+    "@keton-id/cora-linux-arm64": "0.0.0-template",
+    "@keton-id/cora-win32-x64": "0.0.0-template",
+    "@keton-id/cora-win32-arm64": "0.0.0-template"
+  }
 }

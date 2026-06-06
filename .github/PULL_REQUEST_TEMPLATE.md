@@ -18,6 +18,34 @@ Examples:
 
 <!-- e.g. "Closes #123" or "Refs #45". Leave blank if standalone. -->
 
+## OS impact
+
+Cora cuts one upstream version per release, then fans out per-OS
+mirror tags (`cora-macos-v*`, `cora-linux-v*`, `cora-windows-v*`) only
+for the OSes whose files match `.github/release-paths/<os>.txt`. Tick
+the OS(s) this PR affects so reviewers can sanity-check the classifier:
+
+- [ ] macOS — touches `src/identity/macos.zig` or shared code
+- [ ] Linux — touches `src/identity/linux.zig` or shared code
+- [ ] Windows — touches `src/identity/windows.zig`,
+      `src/service/pipe_windows.zig`, `src/service/spawn_windows.zig`,
+      or shared code
+
+Anything outside the OS-exclusive paths above is considered shared, so
+all three OSes will get a mirror tag. Pure docs / template /
+CHANGELOG-only diffs don't trigger any mirror — release-please still
+bumps the version, but nothing is rebuilt.
+
+Overrides (if you need them):
+
+- **Restrict to specific OS(es)** — add a `Release-Os: <os>[,<os>...]`
+  footer to a commit in this PR (e.g. `Release-Os: windows`).
+- **Force a specific version** — use the plain-semver `Release-As: X.Y.Z`
+  footer; the mirror-tag step still scopes per-OS independently.
+
+See [CONTRIBUTING.md → Releasing](../CONTRIBUTING.md#releasing-maintainers-only)
+for the full rules.
+
 ## Changes
 
 <!-- Short bullet list of the user-visible changes in this PR. -->
