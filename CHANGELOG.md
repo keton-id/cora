@@ -24,6 +24,13 @@ mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
 model.
 -->
 
+## [0.9.5-alpha.2](https://github.com/keton-id/cora/compare/v0.9.4-alpha.2...v0.9.5-alpha.2) (2026-06-06)
+
+
+### Bug Fixes
+
+* **release:** render Homebrew formula without on_linux block when Linux sha256 missing ([#58](https://github.com/keton-id/cora/issues/58)) ([f6e63ec](https://github.com/keton-id/cora/commit/f6e63eced9e6a728c7980b6fd74138b18bf38863))
+
 ## [0.9.4-alpha.2](https://github.com/keton-id/cora/compare/v0.9.3-alpha.2...v0.9.4-alpha.2) (2026-06-06)
 
 
