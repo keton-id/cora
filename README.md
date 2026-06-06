@@ -4,14 +4,23 @@
 [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/keton-id/cora/pulls)
 
-[![macOS](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-macos-v*&label=macOS&color=0db7ed&logo=apple&logoColor=white)](https://github.com/keton-id/cora/releases?q=cora-macos-)
-[![Linux](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-linux-v*&label=Linux&color=fcc624&logo=linux&logoColor=black)](https://github.com/keton-id/cora/releases?q=cora-linux-)
-[![Windows](https://img.shields.io/github/v/release/keton-id/cora?include_prereleases&filter=cora-windows-v*&label=Windows&color=00a4ef&logo=windows&logoColor=white)](https://github.com/keton-id/cora/releases?q=cora-windows-)
+**Stable latest**
+
+[![macOS](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/stable-macos.json)](https://github.com/keton-id/cora/releases?q=cora-macos-)
+[![Linux](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/stable-linux.json)](https://github.com/keton-id/cora/releases?q=cora-linux-)
+[![Windows](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/stable-windows.json)](https://github.com/keton-id/cora/releases?q=cora-windows-)
+
+**Pre-release latest**
+
+[![macOS](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/prerelease-macos.json)](https://github.com/keton-id/cora/releases?q=cora-macos-)
+[![Linux](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/prerelease-linux.json)](https://github.com/keton-id/cora/releases?q=cora-linux-)
+[![Windows](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/prerelease-windows.json)](https://github.com/keton-id/cora/releases?q=cora-windows-)
 
 <!--
-Per-OS version badges auto-update from GitHub Releases. Each badge tracks
-the newest release whose tag matches `cora-{os}-v*` (prereleases included).
-After v1.0, drop `include_prereleases` to track stable only.
+Per-OS version badges auto-update from repo-managed JSON files. The release
+workflow regenerates both `stable` and `pre-release` lanes from the GitHub
+Releases API after each publish, so badges follow the real latest release
+per OS instead of whichever tag happened to trigger the workflow.
 -->
 
 
