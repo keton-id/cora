@@ -68,7 +68,7 @@ Every Cora release ships under one upstream `v*` tag and up to three per-OS mirr
 The npm packages follow that shape:
 
 - `@keton-id/cora-<platform>-<arch>` (subpackages) — versioned to the mirror tag that produced them. A subpackage version reports the actual `cr` version on its host.
-- `@keton-id/cora` (this meta) — versioned monotonically and decoupled from the upstream `v*` tag. Every publish bumps the meta's patch and re-pins `optionalDependencies` to whatever each subpackage's current registry version is. `@latest` therefore always pulls the freshest binary for your host, even when one OS skipped a release.
+- `@keton-id/cora` (this meta) — versioned at the upstream release semver (e.g. `0.9.2`). Every publish re-pins `optionalDependencies` to whatever each subpackage's current registry version is, queried live at publish time. `@latest` therefore always pulls the freshest binary for your host, and out-of-step per-OS releases ship cleanly because each subpackage pin reflects that OS's actual current version, not whatever the upstream release shipped.
 
 `cr version` reports the subpackage's version (the one actually running on your machine), not the meta version.
 
