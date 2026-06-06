@@ -41,13 +41,6 @@ pub const Policy = struct {
     }
 };
 
-pub fn isSecretAllowedForTask(task: *const Task, secret: []const u8) bool {
-    for (task.allowed_secrets) |s| {
-        if (std.mem.eql(u8, s, secret)) return true;
-    }
-    return false;
-}
-
 /// Return true if `target_path` (an absolute resolved binary path) is
 /// allowed as the spawn target for `task`. Empty `allowed_targets` =
 /// dev-mode allow-all so pre-existing tasks defined without the field
@@ -108,13 +101,16 @@ test "empty allowed_callers means allow-all (dev mode)" {
     try std.testing.expect(p.isCallerAllowed("/anything"));
 }
 
-test "task lookup + secret check" {
+test "task lookup" {
+    // Audit-2026-06: dropped the isSecretAllowedForTask lines from this
+    // test now that the helper itself has been removed. The remaining
+    // assertion verifies the task lookup path that the service actually
+    // uses (service.zig handleSpawn calls findTask to resolve the
+    // declared task name).
     const t = Task{ .name = "gh", .allowed_secrets = &.{ "GH_TOKEN", "GH_PAT" } };
     const pol = Policy{ .tasks = &.{t} };
     const found = pol.findTask("gh").?;
     try std.testing.expectEqualStrings("gh", found.name);
-    try std.testing.expect(isSecretAllowedForTask(found, "GH_TOKEN"));
-    try std.testing.expect(!isSecretAllowedForTask(found, "AWS_KEY"));
     try std.testing.expect(pol.findTask("missing") == null);
 }
 

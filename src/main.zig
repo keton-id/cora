@@ -784,6 +784,21 @@ fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []
         std.process.exit(1);
     }
 
+    // Audit-2026-06: Reject keys longer than the codec's max_key_len BEFORE
+    // we ever decrypt the vault. secrets_codec.encode accepts any length
+    // (the hashmap has no cap), but decode enforces 128 bytes via
+    // scanner.nextAllocMax. The asymmetry meant a >128 byte key would
+    // encrypt + write successfully, then brick the vault on the very next
+    // unlock/list/delete. Caught at the input boundary so the user gets a
+    // clear error and the on-disk file stays intact.
+    if (key.len > cora.secrets_codec.max_key_len) {
+        std.debug.print(
+            "key too long: {d} bytes (max {d})\n",
+            .{ key.len, cora.secrets_codec.max_key_len },
+        );
+        std.process.exit(1);
+    }
+
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
     const passphrase = try readSecret("Passphrase: ", &pass_buf);
@@ -866,6 +881,19 @@ fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key:
     const cwd = Io.Dir.cwd();
     if (!fileExists(io, cwd, path)) {
         std.debug.print("no {s} — run `cr init` first\n", .{path});
+        std.process.exit(1);
+    }
+
+    // Audit-2026-06: same input boundary check as cmdSecretsSet. delete
+    // never writes an oversized key, but it would have to decrypt and
+    // decode the vault first — the scan would trip the codec's
+    // max_key_len guard and surface the same raw ValueTooLong stack
+    // trace to the user. Cheap to gate early with the same error.
+    if (key.len > cora.secrets_codec.max_key_len) {
+        std.debug.print(
+            "key too long: {d} bytes (max {d})\n",
+            .{ key.len, cora.secrets_codec.max_key_len },
+        );
         std.process.exit(1);
     }
 

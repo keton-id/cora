@@ -7,9 +7,12 @@ pub const SecretBuf = struct {
     buf: [max_secret_len]u8 = undefined,
     len: usize = 0,
 
-    pub fn slice(self: *SecretBuf) []u8 {
-        return self.buf[0..self.len];
-    }
+    // Audit-2026-06: removed the unused mutable `slice()` accessor. The
+    // type deliberately exposes only `constSlice()` (read-only) so the
+    // contents cannot be written around the secureZero deinit path.
+    // A mutable accessor would let callers splice untracked plaintext
+    // into the buffer and break the compile-time "no format method"
+    // invariant. constSlice is the only legitimate read path.
 
     pub fn constSlice(self: *const SecretBuf) []const u8 {
         return self.buf[0..self.len];
