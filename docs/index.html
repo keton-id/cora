@@ -590,6 +590,7 @@
       </div>
       <div class="tabbar" id="tabbar">
         <button class="active" data-tab="script" data-os="mac linux">Install script<span class="rec">recommended</span></button>
+        <button data-tab="script-win" data-os="windows">Install script<span class="rec">recommended</span></button>
         <button data-tab="brew" data-os="mac linux">Homebrew</button>
         <button data-tab="scoop" data-os="windows">Scoop</button>
         <button data-tab="npm" data-os="mac linux windows">npm</button>
@@ -608,6 +609,20 @@
 <span class="p">$</span> curl -fsSL .../install.sh | sh -s -- <span class="arg">--channel alpha</span></pre>
         </div>
         <p class="note">Fetches the latest stable release for your OS/arch, verifies the <code>SHA256</code> checksum, and installs to <code>/usr/local/bin</code> (or <code>~/.local/bin</code> without sudo).</p>
+      </div>
+
+      <div class="tabpanel" data-panel="script-win">
+        <div class="codeblock">
+          <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">Windows · PowerShell</span></div>
+<pre><span class="p">></span> irm https://raw.githubusercontent.com/keton-id/cora/main/install.ps1 | iex
+
+<span class="c"># pin a specific version</span>
+<span class="p">></span> &amp; ([scriptblock]::Create((irm .../install.ps1))) <span class="arg">-Version 1.0.0</span>
+
+<span class="c"># track a prerelease channel</span>
+<span class="p">></span> &amp; ([scriptblock]::Create((irm .../install.ps1))) <span class="arg">-Channel alpha</span></pre>
+        </div>
+        <p class="note">Fetches the latest stable <code>cora-windows-v*</code> release for your arch (AMD64 / ARM64), verifies the <code>SHA256</code> checksum, and installs to <code>%LOCALAPPDATA%\Programs\cora\cr.exe</code>. Appends the install dir to your user <code>PATH</code> — open a new shell to pick it up.</p>
       </div>
 
       <div class="tabpanel" data-panel="brew">
