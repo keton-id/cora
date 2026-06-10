@@ -223,8 +223,9 @@ subpackage at runtime and `spawnSync`s its prebuilt `cr` binary.
   cleanly because every other OS keeps its existing registry version in
   the pin map; only the OSes that just published this release have
   their pin advance.
-- **Concurrency.** `publish-npm-meta` is in a workflow concurrency group
-  (`npm-meta`, `cancel-in-progress: false`). GitHub may cancel a queued
+- **Concurrency.** `publish-npm-meta` is in a per-registry workflow
+  concurrency group (`npm-meta-npmjs` / `npm-meta-github`, both
+  `cancel-in-progress: false`). GitHub may cancel a queued
   run if a third is queued behind it; that is OK here because
   `prepare-meta.mjs` reads npm state at execution time — the surviving
   run reflects every completed subpackage publish, including those of
@@ -232,6 +233,47 @@ subpackage at runtime and `spawnSync`s its prebuilt `cr` binary.
 - **First-ever publish.** If no subpackage exists on the registry yet,
   the meta publish refuses (the `no subpackages published yet` guard in
   `prepare-meta.mjs`); push a full-3-OS stable first.
+
+### Dual-registry publish (npmjs + GitHub Packages)
+
+Every stable release fans out to **two** npm registries in parallel:
+
+- `https://registry.npmjs.org` — public, no auth to install.
+- `https://npm.pkg.github.com` — GitHub Packages under the `keton-id`
+  org. Install requires a GitHub token with `read:packages`.
+
+The release workflow runs subpackage and meta publishes as a
+cross-product matrix `(target × registry)` for subpackages and
+`registry` alone for the meta. Each registry has its own concurrency
+group (`npm-meta-npmjs`, `npm-meta-github`) so a slow publish on one
+side never blocks the other. Subpackage publishes are guarded by an
+`npm view <pkg>@<version> --registry=<url>` precheck — if the version
+already exists on that registry, the step short-circuits instead of
+hitting an EPUBLISHCONFLICT.
+
+Auth tokens:
+
+- npmjs uses the repo's `NPM_TOKEN` secret.
+- GitHub Packages uses the workflow's default `GITHUB_TOKEN` with
+  `permissions: packages: write` (set on the two publish jobs). No PAT
+  required because the package's `repository` field resolves to the
+  same repo whose workflow is publishing.
+
+Installing from GitHub Packages (end user):
+
+```sh
+# ~/.npmrc
+@keton-id:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GH_PACKAGES_TOKEN}
+```
+
+Then `npm i -g @keton-id/cora` resolves through GitHub Packages.
+Plain `npm i -g @keton-id/cora` without that `.npmrc` continues to
+hit npmjs, which is the default for most users.
+
+Both registries always carry identical artifacts at identical
+versions for a given release. Pick one — there is no functional
+difference.
 
 ## Re-running a failed release
 
