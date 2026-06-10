@@ -18,6 +18,17 @@
 //                        (packaging/npm/meta).
 //   --out <dir>          Output dir for the rendered tree (used as
 //                        cwd for `npm publish`).
+//   --registry <url>     Optional. Registry URL for both `npm view`
+//                        and `npm publish`. Defaults to the npm CLI's
+//                        configured registry (npmjs.org unless the
+//                        env/.npmrc says otherwise). Pass
+//                        https://npm.pkg.github.com to target GitHub
+//                        Packages. The bump-on-conflict loop, all
+//                        subpackage `dist-tags.latest` lookups, and
+//                        the `optionalDependencies` audit on a
+//                        conflicting meta version all use this
+//                        registry — never mix registries inside one
+//                        run.
 //
 // optionalDependencies pins are queried live from the npm registry
 // for each of the six `@keton-id/cora-<platform>-<arch>` packages.
@@ -43,9 +54,17 @@ function arg(name) {
   return argv[idx + 1];
 }
 
+function optArg(name) {
+  const idx = argv.indexOf(`--${name}`);
+  if (idx < 0 || idx === argv.length - 1) return null;
+  return argv[idx + 1];
+}
+
 const releaseVersion = arg("version");
 const srcDir = resolve(arg("src"));
 const outDir = resolve(arg("out"));
+const registry = optArg("registry");
+const registryArgs = registry ? ["--registry", registry] : [];
 
 if (!/^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$/.test(releaseVersion)) {
   fail(`--version must be plain semver (got: ${releaseVersion})`);
@@ -78,14 +97,14 @@ function npmRun(args, opts = {}) {
 }
 
 function npmViewVersion(name) {
-  const r = npmRun(["view", name, "dist-tags.latest"]);
+  const r = npmRun(["view", name, "dist-tags.latest", ...registryArgs]);
   if (r.status === 0) return (r.stdout || "").trim() || null;
   if (isNotFound(r.stderr)) return null;
   throw new Error(`npm view ${name} dist-tags.latest failed:\n${r.stderr || r.error?.message}`);
 }
 
 function npmViewOptionalDependencies(name, version) {
-  const r = npmRun(["view", `${name}@${version}`, "optionalDependencies", "--json"]);
+  const r = npmRun(["view", `${name}@${version}`, "optionalDependencies", "--json", ...registryArgs]);
   if (r.status === 0) {
     const text = (r.stdout || "").trim();
     if (!text) return null;
@@ -153,7 +172,7 @@ function renderTree(version, pins) {
 // target version already exists. Detect it from stderr so the
 // bump-on-conflict loop can react; any other failure rethrows.
 function attemptPublish() {
-  const r = npmRun(["publish", "--access", "public"], {
+  const r = npmRun(["publish", "--access", "public", ...registryArgs], {
     cwd: outDir,
     stdio: ["ignore", "pipe", "pipe"],
   });
