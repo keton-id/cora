@@ -24,6 +24,19 @@ mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
 model.
 -->
 
+## [0.10.0-alpha.2](https://github.com/keton-id/cora/compare/v0.9.5-alpha.2...v0.10.0-alpha.2) (2026-06-13)
+
+
+### Features
+
+* **install:** Windows install.ps1 + docs ([#64](https://github.com/keton-id/cora/issues/64)) ([719d007](https://github.com/keton-id/cora/commit/719d0071b1c0a35a94482b41a8956d3cf4cba8da))
+
+
+### Bug Fixes
+
+* **service:** silence stderr trace when probing stale UDS socket ([#66](https://github.com/keton-id/cora/issues/66)) ([3934328](https://github.com/keton-id/cora/commit/3934328473009a59bd1ce7505be7399cc7c5a9b6))
+* stabilize per-OS README release badges ([#60](https://github.com/keton-id/cora/issues/60)) ([9792bf1](https://github.com/keton-id/cora/commit/9792bf15a36e6083b6fcff379cf33d276271c3ac))
+
 ## [0.9.5-alpha.2](https://github.com/keton-id/cora/compare/v0.9.4-alpha.2...v0.9.5-alpha.2) (2026-06-06)
 
 
