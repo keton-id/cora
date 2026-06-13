@@ -92,6 +92,26 @@ pub fn connect(allocator: std.mem.Allocator, io: Io, socket_path: []const u8) !C
 }
 
 pub fn isRunning(io: Io, socket_path: []const u8) bool {
+    // POSIX: probe with raw `std.c.connect` rather than going through
+    // `net.UnixAddress.connect`. The stdlib path routes unknown connect
+    // errors (e.g. macOS ECONNREFUSED=61, common when a stale socket file
+    // remains after a service crash) through `posix.unexpectedErrno`,
+    // which dumps a stack trace to stderr before returning — even when
+    // we `catch return false`. Probing directly keeps stderr clean.
+    if (builtin.os.tag != .windows) {
+        if (socket_path.len >= 104) return false; // sun_path limit on macOS
+        var addr: std.c.sockaddr.un = undefined;
+        addr.family = std.c.AF.UNIX;
+        @memcpy(addr.path[0..socket_path.len], socket_path);
+        addr.path[socket_path.len] = 0;
+
+        const fd = std.c.socket(std.c.AF.UNIX, std.c.SOCK.STREAM, 0);
+        if (fd < 0) return false;
+        defer _ = std.c.close(fd);
+
+        const addr_len: std.c.socklen_t = @intCast(@offsetOf(std.c.sockaddr.un, "path") + socket_path.len + 1);
+        if (std.c.connect(fd, @ptrCast(&addr), addr_len) != 0) return false;
+    }
     var alloc = std.heap.DebugAllocator(.{}){};
     defer _ = alloc.deinit();
     var conn = connect(alloc.allocator(), io, socket_path) catch return false;
