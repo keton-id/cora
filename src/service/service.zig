@@ -803,9 +803,27 @@ fn recvFrameWithStdioFds(
         if (fds_out.* == null and msg.controllen >= @sizeOf(std.c.cmsghdr)) {
             const cmsg: *const std.c.cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
             if (cmsg.level == std.posix.SOL.SOCKET and cmsg.type == std.posix.SCM.RIGHTS) {
-                var fds: [3]std.posix.fd_t = undefined;
-                @memcpy(std.mem.asBytes(&fds), cmsg_buf[@sizeOf(std.c.cmsghdr)..][0..@sizeOf(@TypeOf(fds))]);
-                fds_out.* = fds;
+                const hdr_len = @sizeOf(std.c.cmsghdr);
+                const expected_len = hdr_len + @sizeOf([3]std.posix.fd_t);
+                if (cmsg.len == expected_len) {
+                    var fds: [3]std.posix.fd_t = undefined;
+                    @memcpy(std.mem.asBytes(&fds), cmsg_buf[hdr_len..][0..@sizeOf(@TypeOf(fds))]);
+                    fds_out.* = fds;
+                } else if (cmsg.len > hdr_len) {
+                    // Client attached a different fd count. Reading three
+                    // regardless would treat garbage stack bytes as fds
+                    // and later close() them — potentially closing the
+                    // daemon's own descriptors. Close what was actually
+                    // delivered and proceed without stdio passthrough.
+                    const delivered: usize = @min(
+                        (@as(usize, cmsg.len) - hdr_len) / @sizeOf(std.posix.fd_t),
+                        @as(usize, 3),
+                    );
+                    var fds: [3]std.posix.fd_t = undefined;
+                    const n_bytes = delivered * @sizeOf(std.posix.fd_t);
+                    @memcpy(std.mem.asBytes(&fds)[0..n_bytes], cmsg_buf[hdr_len..][0..n_bytes]);
+                    for (fds[0..delivered]) |dfd| _ = std.c.close(dfd);
+                }
             }
         }
     }
