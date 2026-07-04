@@ -98,7 +98,7 @@ Agent process              Cora Service               cora.zon (disk)
 
 ```
 cr unlock
-  → passphrase prompt (echoed; TTY masking deferred to TUI polish)
+  → passphrase prompt (masked: termios on POSIX, SetConsoleMode fail-closed on Windows)
   → Argon2id derive key
   → decrypt cora.zon secrets block into memory
   → fork + setsid + dup2 stdio→/dev/null

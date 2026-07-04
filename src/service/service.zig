@@ -62,6 +62,10 @@ pub const Config = struct {
     idle_timeout_ms: i64 = 15 * 60 * 1000,
     policy: policy_mod.Policy = .{},
     audit_logger: ?*audit.Logger = null,
+    /// Base environment for spawned children. When set, the child
+    /// inherits these variables with the task's secrets overlaid on
+    /// top. When null the child env contains only the secrets.
+    environ: ?*const std.process.Environ.Map = null,
 };
 
 /// Per-platform server holder. On POSIX wraps `net.Server`; on Windows
@@ -180,6 +184,7 @@ pub const Service = struct {
     policy: policy_mod.Policy,
     rejected: std.atomic.Value(u32),
     audit_logger: ?*audit.Logger,
+    environ: ?*const std.process.Environ.Map,
 
     pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
         const server = try Server.start(io, cfg.socket_path);
@@ -194,6 +199,7 @@ pub const Service = struct {
             .policy = cfg.policy,
             .rejected = .init(0),
             .audit_logger = cfg.audit_logger,
+            .environ = cfg.environ,
         };
         svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
         return svc;
@@ -552,12 +558,23 @@ pub const Service = struct {
         parsed.argv[0] = resolved;
 
         var env_map = std.process.Environ.Map.init(self.allocator);
-        defer env_map.deinit();
-
-        var bufs = std.ArrayList(SecretBuf).empty;
+        // Environ.Map.put copies each value onto the heap; deinit alone
+        // would free those secret copies without wiping them.
         defer {
-            for (bufs.items) |*b| b.zero();
-            bufs.deinit(self.allocator);
+            // values() is const-qualified API-side, but each entry is a
+            // heap dupe owned by the map — writable, safe to constCast.
+            for (env_map.values()) |v| std.crypto.secureZero(u8, @constCast(v));
+            env_map.deinit();
+        }
+
+        // Base environment first, secrets overlaid after — SpawnOptions
+        // with a non-null environ_map replaces the child env entirely,
+        // so without this merge the child would lose PATH/HOME/TERM.
+        if (self.environ) |base| {
+            var base_it = base.iterator();
+            while (base_it.next()) |entry| {
+                try env_map.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
         }
 
         var injected_names = std.ArrayList([]const u8).empty;
@@ -565,14 +582,14 @@ pub const Service = struct {
         var missing_names = std.ArrayList([]const u8).empty;
         defer missing_names.deinit(self.allocator);
 
+        var tmp = SecretBuf{};
+        defer tmp.zero();
         for (task.allowed_secrets) |name| {
-            var b = SecretBuf{};
-            self.secrets.copyInto(name, &b) catch {
+            self.secrets.copyInto(name, &tmp) catch {
                 try missing_names.append(self.allocator, name);
                 continue;
             };
-            try bufs.append(self.allocator, b);
-            try env_map.put(name, bufs.items[bufs.items.len - 1].constSlice());
+            try env_map.put(name, tmp.constSlice());
             try injected_names.append(self.allocator, name);
         }
 
@@ -650,7 +667,9 @@ pub const Service = struct {
             }
 
             const exit_code = try spawn_windows.waitForExit(child);
-            code = @intCast(exit_code);
+            // NTSTATUS exit codes from crashed children (e.g. 0xC0000005)
+            // exceed maxInt(i32); @intCast would panic and kill the daemon.
+            code = @bitCast(exit_code);
         } else {
             // POSIX path: hand the caller's terminal to the child via
             // the SCM_RIGHTS-captured fds. Without them the child inherits
@@ -784,9 +803,27 @@ fn recvFrameWithStdioFds(
         if (fds_out.* == null and msg.controllen >= @sizeOf(std.c.cmsghdr)) {
             const cmsg: *const std.c.cmsghdr = @ptrCast(@alignCast(&cmsg_buf));
             if (cmsg.level == std.posix.SOL.SOCKET and cmsg.type == std.posix.SCM.RIGHTS) {
-                var fds: [3]std.posix.fd_t = undefined;
-                @memcpy(std.mem.asBytes(&fds), cmsg_buf[@sizeOf(std.c.cmsghdr)..][0..@sizeOf(@TypeOf(fds))]);
-                fds_out.* = fds;
+                const hdr_len = @sizeOf(std.c.cmsghdr);
+                const expected_len = hdr_len + @sizeOf([3]std.posix.fd_t);
+                if (cmsg.len == expected_len) {
+                    var fds: [3]std.posix.fd_t = undefined;
+                    @memcpy(std.mem.asBytes(&fds), cmsg_buf[hdr_len..][0..@sizeOf(@TypeOf(fds))]);
+                    fds_out.* = fds;
+                } else if (cmsg.len > hdr_len) {
+                    // Client attached a different fd count. Reading three
+                    // regardless would treat garbage stack bytes as fds
+                    // and later close() them — potentially closing the
+                    // daemon's own descriptors. Close what was actually
+                    // delivered and proceed without stdio passthrough.
+                    const delivered: usize = @min(
+                        (@as(usize, cmsg.len) - hdr_len) / @sizeOf(std.posix.fd_t),
+                        @as(usize, 3),
+                    );
+                    var fds: [3]std.posix.fd_t = undefined;
+                    const n_bytes = delivered * @sizeOf(std.posix.fd_t);
+                    @memcpy(std.mem.asBytes(&fds)[0..n_bytes], cmsg_buf[hdr_len..][0..n_bytes]);
+                    for (fds[0..delivered]) |dfd| _ = std.c.close(dfd);
+                }
             }
         }
     }

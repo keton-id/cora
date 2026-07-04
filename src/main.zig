@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
             usage.printUnlock(io, .stdout);
             return;
         }
-        try cmdUnlock(arena, io, default_path, args);
+        try cmdUnlock(arena, io, default_path, args, init.environ_map);
         return;
     }
     if (std.mem.eql(u8, sub, "lock")) {
@@ -280,7 +280,13 @@ fn cmdInit(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
     usage.outPrint(io, "wrote encrypted {s} ({d} bytes)\n", .{ path, ef.bytes.len });
 }
 
-fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []const []const u8) !void {
+fn cmdUnlock(
+    allocator: std.mem.Allocator,
+    io: Io,
+    path: []const u8,
+    args: []const []const u8,
+    environ_map: *const std.process.Environ.Map,
+) !void {
     var foreground = false;
     for (args[2..]) |a| {
         if (std.mem.eql(u8, a, "--foreground")) foreground = true;
@@ -368,6 +374,7 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
         .idle_timeout_ms = pol.idle_timeout_ms,
         .policy = pol,
         .audit_logger = &audit_logger,
+        .environ = environ_map,
     }, &secrets);
     errdefer svc.deinit();
     if (foreground) usage.outPrint(io, "listening at {s} (foreground)\n", .{sock_path});
@@ -505,7 +512,16 @@ fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void
     // trailing `child pid N exit M` line contaminating it. Stderr keeps the
     // line visible to interactive operators.
     std.debug.print("child pid {d} exit {d}\n", .{ resp.child_pid, resp.exit_code });
-    if (resp.exit_code != 0) std.process.exit(@intCast(@as(u32, @bitCast(resp.exit_code & 0xff))));
+    if (resp.exit_code != 0) std.process.exit(execExitByte(resp.exit_code));
+}
+
+/// Map a nonzero child exit code to the u8 this process exits with.
+/// POSIX truncates exit statuses to the low byte; codes whose low byte
+/// is zero (e.g. Windows 0x100, NTSTATUS 0xC0000000) must still exit
+/// nonzero or `cr exec ... && next` would treat the failure as success.
+fn execExitByte(code: i32) u8 {
+    const low: u8 = @truncate(@as(u32, @bitCast(code)));
+    return if (low == 0) 1 else low;
 }
 
 fn cmdVerify(io: Io, args: []const []const u8) !void {
@@ -1034,6 +1050,19 @@ fn readLineBytes(buf: []u8, echo_stars: bool) ![]const u8 {
         if (echo_stars) std.debug.print("*", .{});
     }
     return buf[0..len];
+}
+
+test "execExitByte never maps nonzero child failure to exit 0" {
+    try std.testing.expectEqual(@as(u8, 1), execExitByte(1));
+    try std.testing.expectEqual(@as(u8, 3), execExitByte(3));
+    try std.testing.expectEqual(@as(u8, 255), execExitByte(255));
+    // Low byte zero but still a failure — must not become exit 0.
+    try std.testing.expectEqual(@as(u8, 1), execExitByte(256));
+    try std.testing.expectEqual(@as(u8, 1), execExitByte(0x1000));
+    // Signal-terminated child (negative code from the service).
+    try std.testing.expectEqual(@as(u8, 241), execExitByte(-15));
+    // Windows NTSTATUS access violation, bitcast to i32.
+    try std.testing.expectEqual(@as(u8, 5), execExitByte(@bitCast(@as(u32, 0xC0000005))));
 }
 
 test "main module imports cora" {
