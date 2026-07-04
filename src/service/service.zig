@@ -62,6 +62,10 @@ pub const Config = struct {
     idle_timeout_ms: i64 = 15 * 60 * 1000,
     policy: policy_mod.Policy = .{},
     audit_logger: ?*audit.Logger = null,
+    /// Base environment for spawned children. When set, the child
+    /// inherits these variables with the task's secrets overlaid on
+    /// top. When null the child env contains only the secrets.
+    environ: ?*const std.process.Environ.Map = null,
 };
 
 /// Per-platform server holder. On POSIX wraps `net.Server`; on Windows
@@ -180,6 +184,7 @@ pub const Service = struct {
     policy: policy_mod.Policy,
     rejected: std.atomic.Value(u32),
     audit_logger: ?*audit.Logger,
+    environ: ?*const std.process.Environ.Map,
 
     pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
         const server = try Server.start(io, cfg.socket_path);
@@ -194,6 +199,7 @@ pub const Service = struct {
             .policy = cfg.policy,
             .rejected = .init(0),
             .audit_logger = cfg.audit_logger,
+            .environ = cfg.environ,
         };
         svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
         return svc;
@@ -559,6 +565,16 @@ pub const Service = struct {
             // heap dupe owned by the map — writable, safe to constCast.
             for (env_map.values()) |v| std.crypto.secureZero(u8, @constCast(v));
             env_map.deinit();
+        }
+
+        // Base environment first, secrets overlaid after — SpawnOptions
+        // with a non-null environ_map replaces the child env entirely,
+        // so without this merge the child would lose PATH/HOME/TERM.
+        if (self.environ) |base| {
+            var base_it = base.iterator();
+            while (base_it.next()) |entry| {
+                try env_map.put(entry.key_ptr.*, entry.value_ptr.*);
+            }
         }
 
         var injected_names = std.ArrayList([]const u8).empty;

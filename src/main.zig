@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
             usage.printUnlock(io, .stdout);
             return;
         }
-        try cmdUnlock(arena, io, default_path, args);
+        try cmdUnlock(arena, io, default_path, args, init.environ_map);
         return;
     }
     if (std.mem.eql(u8, sub, "lock")) {
@@ -280,7 +280,13 @@ fn cmdInit(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
     usage.outPrint(io, "wrote encrypted {s} ({d} bytes)\n", .{ path, ef.bytes.len });
 }
 
-fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []const []const u8) !void {
+fn cmdUnlock(
+    allocator: std.mem.Allocator,
+    io: Io,
+    path: []const u8,
+    args: []const []const u8,
+    environ_map: *const std.process.Environ.Map,
+) !void {
     var foreground = false;
     for (args[2..]) |a| {
         if (std.mem.eql(u8, a, "--foreground")) foreground = true;
@@ -368,6 +374,7 @@ fn cmdUnlock(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
         .idle_timeout_ms = pol.idle_timeout_ms,
         .policy = pol,
         .audit_logger = &audit_logger,
+        .environ = environ_map,
     }, &secrets);
     errdefer svc.deinit();
     if (foreground) usage.outPrint(io, "listening at {s} (foreground)\n", .{sock_path});
