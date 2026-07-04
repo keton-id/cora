@@ -650,7 +650,9 @@ pub const Service = struct {
             }
 
             const exit_code = try spawn_windows.waitForExit(child);
-            code = @intCast(exit_code);
+            // NTSTATUS exit codes from crashed children (e.g. 0xC0000005)
+            // exceed maxInt(i32); @intCast would panic and kill the daemon.
+            code = @bitCast(exit_code);
         } else {
             // POSIX path: hand the caller's terminal to the child via
             // the SCM_RIGHTS-captured fds. Without them the child inherits
