@@ -552,12 +552,13 @@ pub const Service = struct {
         parsed.argv[0] = resolved;
 
         var env_map = std.process.Environ.Map.init(self.allocator);
-        defer env_map.deinit();
-
-        var bufs = std.ArrayList(SecretBuf).empty;
+        // Environ.Map.put copies each value onto the heap; deinit alone
+        // would free those secret copies without wiping them.
         defer {
-            for (bufs.items) |*b| b.zero();
-            bufs.deinit(self.allocator);
+            // values() is const-qualified API-side, but each entry is a
+            // heap dupe owned by the map — writable, safe to constCast.
+            for (env_map.values()) |v| std.crypto.secureZero(u8, @constCast(v));
+            env_map.deinit();
         }
 
         var injected_names = std.ArrayList([]const u8).empty;
@@ -565,14 +566,14 @@ pub const Service = struct {
         var missing_names = std.ArrayList([]const u8).empty;
         defer missing_names.deinit(self.allocator);
 
+        var tmp = SecretBuf{};
+        defer tmp.zero();
         for (task.allowed_secrets) |name| {
-            var b = SecretBuf{};
-            self.secrets.copyInto(name, &b) catch {
+            self.secrets.copyInto(name, &tmp) catch {
                 try missing_names.append(self.allocator, name);
                 continue;
             };
-            try bufs.append(self.allocator, b);
-            try env_map.put(name, bufs.items[bufs.items.len - 1].constSlice());
+            try env_map.put(name, tmp.constSlice());
             try injected_names.append(self.allocator, name);
         }
 
