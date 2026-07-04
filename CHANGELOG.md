@@ -24,6 +24,13 @@ mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
 model.
 -->
 
+## [0.10.1-alpha.2](https://github.com/keton-id/cora/compare/v0.10.0-alpha.2...v0.10.1-alpha.2) (2026-07-04)
+
+
+### Bug Fixes
+
+* harden cr exec spawn path across platforms ([#67](https://github.com/keton-id/cora/issues/67)) ([06e3bb4](https://github.com/keton-id/cora/commit/06e3bb48a5c4eff0b1d627f2f0f601e956d56649))
+
 ## [0.10.0-alpha.2](https://github.com/keton-id/cora/compare/v0.9.5-alpha.2...v0.10.0-alpha.2) (2026-06-13)
 
 
