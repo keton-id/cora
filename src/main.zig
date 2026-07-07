@@ -101,6 +101,10 @@ pub fn main(init: std.process.Init) !void {
         try cmdSecrets(arena, io, default_path, args);
         return;
     }
+    if (std.mem.eql(u8, sub, "daemon")) {
+        try cmdDaemon(arena, io, args);
+        return;
+    }
 
     std.debug.print("unknown subcommand: {s}\n", .{sub});
     usage.printTop(io, .stderr);
@@ -141,6 +145,7 @@ fn cmdHelp(io: Io, parts: []const []const u8) !void {
     if (std.mem.eql(u8, sub, "exec")) return usage.printExec(io, .stdout);
     if (std.mem.eql(u8, sub, "tui")) return usage.printTui(io, .stdout);
     if (std.mem.eql(u8, sub, "verify")) return usage.printVerify(io, .stdout);
+    if (std.mem.eql(u8, sub, "daemon")) return usage.printDaemon(io, .stdout);
     if (std.mem.eql(u8, sub, "version")) return printVersion(io);
     if (usage.isHelpFlag(sub)) return usage.printTop(io, .stdout);
 
@@ -531,6 +536,47 @@ fn cmdExec(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void
 fn execExitByte(code: i32) u8 {
     const low: u8 = @truncate(@as(u32, @bitCast(code)));
     return if (low == 0) 1 else low;
+}
+
+/// `cr daemon unit` — print a supervised-service unit template for the
+/// current OS to stdout. Cora deliberately does not auto-start (the operator
+/// holds the passphrase), so the template runs `cr unlock --foreground` and
+/// still prompts on start. Resolves this binary's absolute path via the same
+/// pid→path lookup `cr verify` uses, and the current working directory.
+fn cmdDaemon(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void {
+    if (args.len < 3 or usage.isHelpFlag(args[2])) {
+        usage.printDaemon(io, if (args.len < 3) .stderr else .stdout);
+        if (args.len < 3) std.process.exit(1);
+        return;
+    }
+    if (!std.mem.eql(u8, args[2], "unit")) {
+        std.debug.print("unknown daemon action: {s}\n", .{args[2]});
+        usage.printDaemon(io, .stderr);
+        std.process.exit(1);
+    }
+
+    const self_pid: i32 = @intCast(std.c.getpid());
+    const ident = cora.identity.lookupByPid(self_pid) catch {
+        std.debug.print("could not resolve own binary path\n", .{});
+        std.process.exit(1);
+    };
+
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse {
+        std.debug.print("could not resolve working directory\n", .{});
+        std.process.exit(1);
+    };
+    const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+
+    if (!cora.daemon.hostSupported()) {
+        std.debug.print("no unit template for this OS\n", .{});
+        std.process.exit(1);
+    }
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    try cora.daemon.renderForHost(&aw.writer, ident.path(), cwd);
+    usage.outPrint(io, "{s}", .{aw.written()});
 }
 
 fn cmdVerify(io: Io, args: []const []const u8) !void {

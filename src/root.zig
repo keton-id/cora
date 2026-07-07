@@ -11,6 +11,7 @@ pub const secrets_codec = @import("store/secrets_codec.zig");
 pub const proto = @import("service/proto.zig");
 pub const idle = @import("service/idle.zig");
 pub const ratelimit = @import("service/ratelimit.zig");
+pub const daemon = @import("service/daemon.zig");
 pub const service = @import("service/service.zig");
 pub const client = @import("service/client.zig");
 pub const spawn_windows = @import("service/spawn_windows.zig");
@@ -31,6 +32,7 @@ test {
     _ = @import("service/proto.zig");
     _ = @import("service/idle.zig");
     _ = @import("service/ratelimit.zig");
+    _ = @import("service/daemon.zig");
     _ = @import("service/service.zig");
     _ = @import("policy/policy.zig");
     _ = @import("identity/identity.zig");

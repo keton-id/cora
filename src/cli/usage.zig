@@ -85,9 +85,10 @@ const top_text =
     \\  lock                                 Stop service, zero memory
     \\  status                               Show service state
     \\  exec TASK -- argv...                 Spawn subprocess with task secrets injected
-    \\  secrets <set|list|delete> [KEY]      Manage secrets
+    \\  secrets <set|list|delete|import> ... Manage secrets
     \\  policy <show|allow|deny|task> ...    Manage policy
     \\  audit <tail|show> [opts]             Read audit log
+    \\  daemon unit                          Print a service unit template
     \\  tui                                  Launch interactive TUI menu
     \\  verify --pid PID                     Resolve binary path of a pid (debug)
     \\  version                              Show version
@@ -286,6 +287,26 @@ const tui_text =
 ;
 
 // --- verify ---------------------------------------------------------------
+
+pub fn printDaemon(io: Io, ch: Channel) void {
+    write(io, ch, daemon_text);
+}
+
+const daemon_text =
+    \\cr daemon — Persistent-service unit templates
+    \\
+    \\Usage:
+    \\  cr daemon unit
+    \\
+    \\Prints a service unit for the current OS (systemd --user on Linux,
+    \\launchd LaunchAgent on macOS) that runs `cr unlock --foreground` from
+    \\the current directory. Cora does not auto-start — the unit still
+    \\prompts for the passphrase on start, keeping the key with the operator.
+    \\
+    \\  cr daemon unit > ~/.config/systemd/user/cora.service   # Linux
+    \\  cr daemon unit > ~/Library/LaunchAgents/dev.cora.agent.plist  # macOS
+    \\
+;
 
 pub fn printVerify(io: Io, ch: Channel) void {
     write(io, ch, verify_text);
