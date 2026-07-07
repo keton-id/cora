@@ -81,6 +81,62 @@ fn runCr(
     return .{ .term = term, .stdout = stdout_slice, .stderr = stderr_slice };
 }
 
+/// Like `runCr` but runs the child with an explicit, minimal environment
+/// built from `extra_env` only. Used to exercise `secrets import --from-env`,
+/// which reads values from the caller's environment — the import path touches
+/// no other env var, so a one-entry environment is sufficient and keeps the
+/// injection cross-platform (Environ.Map, not libc setenv).
+fn runCrEnv(
+    allocator: std.mem.Allocator,
+    io: Io,
+    cwd_dir: Io.Dir,
+    args: []const []const u8,
+    stdin_input: []const u8,
+    extra_env: []const [2][]const u8,
+) !RunResult {
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(allocator);
+    try argv_list.append(allocator, opts.cr_bin_path);
+    try argv_list.appendSlice(allocator, args);
+
+    var env = std.process.Environ.Map.init(allocator);
+    defer env.deinit();
+    for (extra_env) |kv| try env.put(kv[0], kv[1]);
+
+    var child = try std.process.spawn(io, .{
+        .argv = argv_list.items,
+        .cwd = .{ .dir = cwd_dir },
+        .environ_map = &env,
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    });
+    errdefer child.kill(io);
+
+    if (stdin_input.len > 0) {
+        try child.stdin.?.writeStreamingAll(io, stdin_input);
+    }
+    child.stdin.?.close(io);
+    child.stdin = null;
+
+    var mr_buf: Io.File.MultiReader.Buffer(2) = undefined;
+    var mr: Io.File.MultiReader = undefined;
+    mr.init(allocator, io, mr_buf.toStreams(), &.{ child.stdout.?, child.stderr.? });
+    defer mr.deinit();
+
+    while (mr.fill(64, .none)) |_| {} else |err| switch (err) {
+        error.EndOfStream => {},
+        else => |e| return e,
+    }
+    try mr.checkAnyError();
+
+    const term = try child.wait(io);
+    const stdout_slice = try mr.toOwnedSlice(0);
+    errdefer allocator.free(stdout_slice);
+    const stderr_slice = try mr.toOwnedSlice(1);
+    return .{ .term = term, .stdout = stdout_slice, .stderr = stderr_slice };
+}
+
 test "cr binary is installed at expected path" {
     var dir = try Io.Dir.cwd().openDir(std.testing.io, std.fs.path.dirname(opts.cr_bin_path).?, .{});
     defer dir.close(std.testing.io);
@@ -158,6 +214,42 @@ test "secrets set preserves policy (regression: finding 1)" {
     try std.testing.expect(std.mem.indexOf(u8, show.stdout, "tasks (1)") != null);
     try std.testing.expect(std.mem.indexOf(u8, show.stdout, "demo") != null);
     try std.testing.expect(std.mem.indexOf(u8, show.stdout, "API_KEY") != null);
+}
+
+test "cr secrets import --from-env stores set vars and skips unset" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    // CORA_IMPORT_A is provided in the child environment; CORA_IMPORT_MISSING
+    // is deliberately absent.
+    {
+        var r = try runCrEnv(
+            allocator,
+            io,
+            tmp.dir,
+            &.{ "secrets", "import", "--from-env", "CORA_IMPORT_A", "CORA_IMPORT_MISSING" },
+            pass_line,
+            &.{.{ "CORA_IMPORT_A", "value-from-env" }},
+        );
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "imported CORA_IMPORT_A") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "skip (not set): CORA_IMPORT_MISSING") != null);
+        // The value must never appear on stdout/stderr.
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "value-from-env") == null);
+        try std.testing.expect(std.mem.indexOf(u8, r.stderr, "value-from-env") == null);
+    }
+
+    // The imported name is now in the vault; the unset one is not.
+    var list = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+    defer list.deinit(allocator);
+    try std.testing.expect(list.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, list.stdout, "CORA_IMPORT_A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, list.stdout, "CORA_IMPORT_MISSING") == null);
 }
 
 // --- Cross-platform parity contracts --------------------------------------

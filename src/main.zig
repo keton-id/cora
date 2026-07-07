@@ -160,6 +160,7 @@ fn cmdHelp(io: Io, parts: []const []const u8) !void {
         if (std.mem.eql(u8, a, "set")) return usage.printSecretsSet(io, .stdout);
         if (std.mem.eql(u8, a, "list")) return usage.printSecretsList(io, .stdout);
         if (std.mem.eql(u8, a, "delete")) return usage.printSecretsDelete(io, .stdout);
+        if (std.mem.eql(u8, a, "import")) return usage.printSecretsImport(io, .stdout);
         std.debug.print("no help topic: secrets {s}\n", .{a});
         usage.printSecrets(io, .stderr);
         std.process.exit(1);
@@ -234,6 +235,14 @@ fn cmdSecrets(arena: std.mem.Allocator, io: Io, path: []const u8, args: []const 
             std.process.exit(1);
         }
         try cmdSecretsDelete(arena, io, path, args[3]);
+        return;
+    }
+    if (std.mem.eql(u8, action, "import")) {
+        if (args.len >= 4 and usage.isHelpFlag(args[3])) {
+            usage.printSecretsImport(io, .stdout);
+            return;
+        }
+        try cmdSecretsImport(arena, io, path, args[3..]);
         return;
     }
 
@@ -940,6 +949,86 @@ fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void 
     }
     var it = store_.map.keyIterator();
     while (it.next()) |k| usage.outPrint(io, "{s}\n", .{k.*});
+}
+
+/// `cr secrets import --from-env NAME...` — read each named environment
+/// variable from the operator's own environment and store its value in the
+/// vault under the same name. Values never appear on argv (avoiding the
+/// `ps`/shell-history leak of `secrets set VALUE`); they come straight from
+/// the caller's env. A name whose variable is unset is reported and skipped,
+/// not treated as an error, so a partial import still writes what it found.
+fn cmdSecretsImport(allocator: std.mem.Allocator, io: Io, path: []const u8, rest: []const []const u8) !void {
+    if (rest.len == 0 or !std.mem.eql(u8, rest[0], "--from-env")) {
+        usage.printSecretsImport(io, .stderr);
+        std.process.exit(1);
+    }
+    const names = rest[1..];
+    if (names.len == 0) {
+        std.debug.print("no variable names given\n", .{});
+        usage.printSecretsImport(io, .stderr);
+        std.process.exit(1);
+    }
+
+    const cwd = Io.Dir.cwd();
+    if (!fileExists(io, cwd, path)) {
+        std.debug.print("no {s} — run `cr init` first\n", .{path});
+        std.process.exit(1);
+    }
+
+    // Validate all names up front so a bad name never burns the passphrase
+    // entry or leaves a half-written vault.
+    for (names) |name| {
+        if (name.len > cora.secrets_codec.max_key_len) {
+            std.debug.print("key too long: {s} ({d} > {d})\n", .{ name, name.len, cora.secrets_codec.max_key_len });
+            std.process.exit(1);
+        }
+    }
+
+    var pass_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &pass_buf);
+    const passphrase = try readSecret("Passphrase: ", &pass_buf);
+
+    const encoded = try cora.store.readFile(allocator, io, cwd, path);
+    defer allocator.free(encoded);
+    var dec = cora.store.decrypt(allocator, io, passphrase, encoded) catch |err| switch (err) {
+        cora.CoraError.AuthFailed => {
+            std.debug.print("authentication failed\n", .{});
+            std.process.exit(1);
+        },
+        else => return err,
+    };
+    defer dec.deinit();
+
+    var store_ = cora.MemStore.init(allocator);
+    defer store_.deinit();
+    try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
+
+    var imported: usize = 0;
+    for (names) |name| {
+        const name_z = try allocator.dupeZ(u8, name);
+        defer allocator.free(name_z);
+        const val_ptr = std.c.getenv(name_z) orelse {
+            usage.outPrint(io, "skip (not set): {s}\n", .{name});
+            continue;
+        };
+        const value = std.mem.span(val_ptr);
+        store_.put(name, value) catch |err| switch (err) {
+            cora.CoraError.SecretTooLarge => {
+                std.debug.print("skip (value too large): {s}\n", .{name});
+                continue;
+            },
+            else => return err,
+        };
+        imported += 1;
+        usage.outPrint(io, "imported {s}\n", .{name});
+    }
+
+    if (imported == 0) {
+        std.debug.print("nothing imported\n", .{});
+        std.process.exit(1);
+    }
+    try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
+    usage.outPrint(io, "imported {d} secret(s)\n", .{imported});
 }
 
 fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {

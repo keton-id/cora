@@ -318,12 +318,13 @@ const secrets_text =
     \\cr secrets — Manage secrets in cora.zon
     \\
     \\Usage:
-    \\  cr secrets <set|list|delete> [KEY]
+    \\  cr secrets <set|list|delete|import> [KEY]
     \\
     \\Actions:
     \\  set KEY                              Add or update a secret (prompts for value)
     \\  list                                 List secret names (no values)
     \\  delete KEY                           Remove a secret
+    \\  import --from-env NAME...            Import values from the environment
     \\
     \\Each action prompts for the passphrase, decrypts cora.zon, mutates,
     \\and re-encrypts. The on-disk file is never written in plaintext.
@@ -384,6 +385,30 @@ const secrets_delete_text =
     \\
     \\Arguments:
     \\  KEY                                  Secret name to remove
+    \\
+;
+
+pub fn printSecretsImport(io: Io, ch: Channel) void {
+    write(io, ch, secrets_import_text);
+}
+
+const secrets_import_text =
+    \\cr secrets import — Import secrets from the environment
+    \\
+    \\Usage:
+    \\  cr secrets import --from-env NAME...
+    \\
+    \\Arguments:
+    \\  NAME...                              Environment variable names to
+    \\                                       import. Each value is read from
+    \\                                       your own environment and stored
+    \\                                       under the same name.
+    \\
+    \\Values come from the environment, never argv, so they do not leak into
+    \\shell history or `ps`. A NAME whose variable is unset is skipped.
+    \\
+    \\  export GH_TOKEN=ghp_...
+    \\  cr secrets import --from-env GH_TOKEN STRIPE_KEY
     \\
 ;
 
