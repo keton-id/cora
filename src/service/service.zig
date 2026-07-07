@@ -12,6 +12,7 @@ const audit = @import("../audit.zig");
 const pipe_windows = @import("pipe_windows.zig");
 const spawn_windows = @import("spawn_windows.zig");
 const binhash = @import("../crypto/binhash.zig");
+const ratelimit = @import("ratelimit.zig");
 const CoraError = @import("../error.zig").CoraError;
 
 /// Per-platform stdio passthrough handle carried from `handle` into
@@ -186,6 +187,12 @@ pub const Service = struct {
     rejected: std.atomic.Value(u32),
     audit_logger: ?*audit.Logger,
     environ: ?*const std.process.Environ.Map,
+    /// Per-task spawn windows for rate limiting. Keyed by task name, whose
+    /// backing bytes live in `policy` for the service's lifetime, so the
+    /// slice is stored directly without duplication. The accept loop is
+    /// single-threaded, so this map needs no lock (same rationale as the
+    /// rest of the service's shared state).
+    rate_windows: std.StringHashMapUnmanaged(ratelimit.Window),
 
     pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
         const server = try Server.start(io, cfg.socket_path);
@@ -201,6 +208,7 @@ pub const Service = struct {
             .rejected = .init(0),
             .audit_logger = cfg.audit_logger,
             .environ = cfg.environ,
+            .rate_windows = .empty,
         };
         svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
         return svc;
@@ -281,6 +289,7 @@ pub const Service = struct {
         if (builtin.os.tag != .windows) {
             Io.Dir.cwd().deleteFile(self.io, self.socket_path) catch {};
         }
+        self.rate_windows.deinit(self.allocator);
         zeroAll(self.secrets);
     }
 
@@ -575,6 +584,27 @@ pub const Service = struct {
             try proto.writeFrame(writer, .err, "target not allowed");
             try writer.flush();
             return CoraError.TargetNotAllowed;
+        }
+
+        // Rate-limit gate: bound how many times this task's secrets can be
+        // pulled into a subprocess per window. Checked after the target gate
+        // (so a rejected target does not consume the quota) and before any
+        // secret is touched. Unlimited tasks (max_spawns == 0) short-circuit
+        // inside Window.allow.
+        if (task.max_spawns > 0) {
+            const gop = try self.rate_windows.getOrPut(self.allocator, task.name);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            if (!gop.value_ptr.allow(nowMs(self.io), task.max_spawns, task.window_ms)) {
+                self.emit(.{ .rate_limited = .{
+                    .ts_ms = nowMs(self.io),
+                    .caller_pid = ident.pid,
+                    .caller_bin = ident.path(),
+                    .task = declared_task,
+                } });
+                try proto.writeFrame(writer, .err, "rate limit exceeded");
+                try writer.flush();
+                return CoraError.RateLimited;
+            }
         }
 
         // Rewrite argv[0] in place with the resolved absolute path so the
@@ -1034,6 +1064,11 @@ pub fn renderPolicy(w: *Io.Writer, pol: *const policy_mod.Policy) !void {
         } else {
             try w.print("    targets ({d}):\n", .{t.allowed_targets.len});
             for (t.allowed_targets) |tgt| try w.print("      {s}\n", .{tgt});
+        }
+        if (t.max_spawns == 0) {
+            try w.print("    rate limit: (none)\n", .{});
+        } else {
+            try w.print("    rate limit: {d} spawns / {d} ms\n", .{ t.max_spawns, t.window_ms });
         }
     }
 }

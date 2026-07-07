@@ -498,7 +498,8 @@ const policy_task_add_text =
     \\cr policy task add — Define a task
     \\
     \\Usage:
-    \\  cr policy task add NAME [--target PATH ...] [SECRETS...]
+    \\  cr policy task add NAME [--target PATH ...] [--max-spawns N]
+    \\                    [--window-ms MS] [SECRETS...]
     \\
     \\Arguments:
     \\  NAME                                 Task name
@@ -512,6 +513,13 @@ const policy_task_add_text =
     \\                                       allowed (dev mode) — same
     \\                                       behavior as allowed_callers when
     \\                                       its list is empty.
+    \\  --max-spawns N                       Cap spawns per window (0 = no
+    \\                                       limit, default). Bounds how often
+    \\                                       this task's secrets can be pulled
+    \\                                       into a subprocess.
+    \\  --window-ms MS                       Rate-limit window in ms
+    \\                                       (default 60000). Used with
+    \\                                       --max-spawns.
     \\
     \\Replaces any existing task with the same name.
     \\

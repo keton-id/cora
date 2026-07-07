@@ -18,6 +18,14 @@ pub const Task = struct {
     /// supposed to be trusted; the missing layer is "what is the trusted
     /// caller allowed to run."
     allowed_targets: []const []const u8 = &.{},
+    /// Maximum number of spawns permitted within `window_ms`. 0 = unlimited
+    /// (default, backward compatible). Bounds how many times a trusted
+    /// caller can pull this task's secrets into a subprocess before the
+    /// window resets.
+    max_spawns: u32 = 0,
+    /// Rolling window length for `max_spawns`, in milliseconds. Ignored when
+    /// `max_spawns` is 0.
+    window_ms: i64 = 60_000,
 };
 
 /// Separator embedded in an `allowed_callers` entry to pin the caller to a
@@ -226,6 +234,26 @@ test "isTargetAllowedForTask: non-empty whitelist enforces exact match" {
     try std.testing.expect(!isTargetAllowedForTask(&t, "/bin/cat"));
     // No prefix match — must be exact path.
     try std.testing.expect(!isTargetAllowedForTask(&t, "/usr/bin/gh-extension"));
+}
+
+test "serialize/parse roundtrip preserves rate-limit fields" {
+    const allocator = std.testing.allocator;
+    const original = Policy{
+        .tasks = &.{
+            .{ .name = "deploy", .allowed_secrets = &.{"SSH_KEY"}, .max_spawns = 5, .window_ms = 30_000 },
+        },
+    };
+    const text = try serialize(allocator, original);
+    defer allocator.free(text);
+    var back = try parse(allocator, text);
+    defer free(allocator, &back);
+    try std.testing.expectEqual(@as(u32, 5), back.tasks[0].max_spawns);
+    try std.testing.expectEqual(@as(i64, 30_000), back.tasks[0].window_ms);
+}
+
+test "task defaults are unlimited (max_spawns 0)" {
+    const t = Task{ .name = "x" };
+    try std.testing.expectEqual(@as(u32, 0), t.max_spawns);
 }
 
 test "serialize/parse roundtrip preserves allowed_targets" {

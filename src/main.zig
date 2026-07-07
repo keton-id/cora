@@ -756,6 +756,8 @@ fn cmdPolicyTask(
         // a flag/flag-value is treated as a secret name. Order between
         // flags and secrets does not matter, but `--target` must be
         // immediately followed by a path (a missing value is rejected).
+        var max_spawns: u32 = 0;
+        var window_ms: i64 = 60_000;
         var i: usize = 5;
         while (i < args.len) : (i += 1) {
             if (std.mem.eql(u8, args[i], "--target")) {
@@ -765,6 +767,32 @@ fn cmdPolicyTask(
                     std.process.exit(1);
                 }
                 try targets.append(allocator, args[i + 1]);
+                i += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--max-spawns")) {
+                if (i + 1 >= args.len) {
+                    std.debug.print("--max-spawns requires a number\n", .{});
+                    usage.printPolicyTaskAdd(io, .stderr);
+                    std.process.exit(1);
+                }
+                max_spawns = std.fmt.parseInt(u32, args[i + 1], 10) catch {
+                    std.debug.print("invalid --max-spawns value: {s}\n", .{args[i + 1]});
+                    std.process.exit(1);
+                };
+                i += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--window-ms")) {
+                if (i + 1 >= args.len) {
+                    std.debug.print("--window-ms requires a number\n", .{});
+                    usage.printPolicyTaskAdd(io, .stderr);
+                    std.process.exit(1);
+                }
+                window_ms = std.fmt.parseInt(i64, args[i + 1], 10) catch {
+                    std.debug.print("invalid --window-ms value: {s}\n", .{args[i + 1]});
+                    std.process.exit(1);
+                };
                 i += 1;
                 continue;
             }
@@ -778,6 +806,8 @@ fn cmdPolicyTask(
             .name = name,
             .allowed_secrets = secrets_list.items,
             .allowed_targets = targets.items,
+            .max_spawns = max_spawns,
+            .window_ms = window_ms,
         });
     } else { // "remove" — validated by caller
         for (pol.tasks) |t| {
