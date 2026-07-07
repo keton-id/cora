@@ -113,6 +113,10 @@ pub fn main(init: std.process.Init) !void {
         try cmdRekey(arena, io, default_path);
         return;
     }
+    if (std.mem.eql(u8, sub, "recovery")) {
+        try cmdRecovery(arena, io, default_path, args);
+        return;
+    }
 
     std.debug.print("unknown subcommand: {s}\n", .{sub});
     usage.printTop(io, .stderr);
@@ -155,6 +159,7 @@ fn cmdHelp(io: Io, parts: []const []const u8) !void {
     if (std.mem.eql(u8, sub, "verify")) return usage.printVerify(io, .stdout);
     if (std.mem.eql(u8, sub, "daemon")) return usage.printDaemon(io, .stdout);
     if (std.mem.eql(u8, sub, "rekey")) return usage.printRekey(io, .stdout);
+    if (std.mem.eql(u8, sub, "recovery")) return usage.printRecovery(io, .stdout);
     if (std.mem.eql(u8, sub, "version")) return printVersion(io);
     if (usage.isHelpFlag(sub)) return usage.printTop(io, .stdout);
 
@@ -956,6 +961,130 @@ fn cmdRekey(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
 
     try cora.store.saveSecrets(allocator, io, cwd, path, new_pass, &store_, dec.config_bytes);
     usage.outPrint(io, "passphrase changed\n", .{});
+}
+
+/// `cr recovery <backup|restore>` — break-glass second passphrase.
+///
+/// `backup` writes `<path>.recovery`, an independent encrypted copy of the
+/// vault sealed under a separate recovery passphrase. `restore` rebuilds the
+/// main vault from that copy under a new primary passphrase, regaining access
+/// when the primary passphrase is lost.
+///
+/// This is a point-in-time snapshot, not a live second key slot: secrets
+/// changed after `backup` are not reflected until `backup` is re-run. That
+/// keeps the on-disk format and the save path untouched — the recovery copy
+/// is just `createEncrypted` under another passphrase — at the cost of manual
+/// refresh. Re-run `cr recovery backup` after changing secrets.
+fn cmdRecovery(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []const []const u8) !void {
+    if (args.len < 3 or usage.isHelpFlag(args[2])) {
+        usage.printRecovery(io, if (args.len < 3) .stderr else .stdout);
+        if (args.len < 3) std.process.exit(1);
+        return;
+    }
+    const action = args[2];
+    const rec_path = try std.fmt.allocPrint(allocator, "{s}.recovery", .{path});
+    defer allocator.free(rec_path);
+    const cwd = Io.Dir.cwd();
+
+    if (std.mem.eql(u8, action, "backup")) {
+        if (!fileExists(io, cwd, path)) {
+            std.debug.print("no {s} — run `cr init` first\n", .{path});
+            std.process.exit(1);
+        }
+        var cur_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &cur_buf);
+        const cur = try readSecret("Current passphrase: ", &cur_buf);
+
+        const encoded = try cora.store.readFile(allocator, io, cwd, path);
+        defer allocator.free(encoded);
+        var dec = cora.store.decrypt(allocator, io, cur, encoded) catch |err| switch (err) {
+            cora.CoraError.AuthFailed => {
+                std.debug.print("authentication failed\n", .{});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer dec.deinit();
+
+        var rec_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &rec_buf);
+        const rec = try readSecret("New recovery passphrase: ", &rec_buf);
+        var rec2_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &rec2_buf);
+        const rec2 = try readSecret("Confirm recovery passphrase: ", &rec2_buf);
+        if (!std.mem.eql(u8, rec, rec2)) {
+            std.debug.print("passphrases do not match\n", .{});
+            std.process.exit(1);
+        }
+
+        var ef = cora.store.createEncrypted(allocator, io, .{
+            .passphrase = rec,
+            .config_bytes = dec.config_bytes,
+            .secrets_plaintext = dec.secrets_plaintext,
+        }) catch |err| switch (err) {
+            cora.CoraError.PassphraseTooShort => {
+                std.debug.print("recovery passphrase too short (min {d} chars)\n", .{cora.store.min_passphrase_len});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer ef.deinit();
+        try cora.store.writeFile(io, cwd, rec_path, ef.bytes);
+        usage.outPrint(io, "recovery copy written to {s}\n", .{rec_path});
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "restore")) {
+        if (!fileExists(io, cwd, rec_path)) {
+            std.debug.print("no {s} — run `cr recovery backup` first\n", .{rec_path});
+            std.process.exit(1);
+        }
+        var rec_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &rec_buf);
+        const rec = try readSecret("Recovery passphrase: ", &rec_buf);
+
+        const encoded = try cora.store.readFile(allocator, io, cwd, rec_path);
+        defer allocator.free(encoded);
+        var dec = cora.store.decrypt(allocator, io, rec, encoded) catch |err| switch (err) {
+            cora.CoraError.AuthFailed => {
+                std.debug.print("authentication failed\n", .{});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer dec.deinit();
+
+        var new_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &new_buf);
+        const new_pass = try readSecret("New passphrase: ", &new_buf);
+        var conf_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &conf_buf);
+        const conf = try readSecret("Confirm new passphrase: ", &conf_buf);
+        if (!std.mem.eql(u8, new_pass, conf)) {
+            std.debug.print("passphrases do not match\n", .{});
+            std.process.exit(1);
+        }
+
+        var ef = cora.store.createEncrypted(allocator, io, .{
+            .passphrase = new_pass,
+            .config_bytes = dec.config_bytes,
+            .secrets_plaintext = dec.secrets_plaintext,
+        }) catch |err| switch (err) {
+            cora.CoraError.PassphraseTooShort => {
+                std.debug.print("passphrase too short (min {d} chars)\n", .{cora.store.min_passphrase_len});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer ef.deinit();
+        try cora.store.writeFile(io, cwd, path, ef.bytes);
+        usage.outPrint(io, "vault restored to {s}\n", .{path});
+        return;
+    }
+
+    std.debug.print("unknown recovery action: {s}\n", .{action});
+    usage.printRecovery(io, .stderr);
+    std.process.exit(1);
 }
 
 fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {

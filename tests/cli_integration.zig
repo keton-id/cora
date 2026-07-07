@@ -318,6 +318,65 @@ test "cr rekey changes passphrase: old fails, new works, secrets survive" {
     }
 }
 
+test "cr recovery backup then restore regains access with a new passphrase" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    const recovery_pass = "my recovery pass phrase";
+    const new_primary = "fresh primary passphrase";
+
+    // Seed a secret under the primary passphrase.
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "TOKEN" }, pass_line ++ "tokval\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    // Back up: current passphrase, then recovery passphrase twice.
+    {
+        const stdin = passphrase ++ "\n" ++ recovery_pass ++ "\n" ++ recovery_pass ++ "\n";
+        var r = try runCr(allocator, io, tmp.dir, &.{ "recovery", "backup" }, stdin);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "cora.zon.recovery") != null);
+    }
+
+    // The recovery sidecar exists and is encrypted (CORA magic).
+    {
+        const blob = try tmp.dir.readFileAlloc(io, "cora.zon.recovery", allocator, .limited(64 * 1024));
+        defer allocator.free(blob);
+        try std.testing.expectEqualStrings("CORA", blob[0..4]);
+    }
+
+    // Restore: recovery passphrase, then a new primary passphrase twice.
+    {
+        const stdin = recovery_pass ++ "\n" ++ new_primary ++ "\n" ++ new_primary ++ "\n";
+        var r = try runCr(allocator, io, tmp.dir, &.{ "recovery", "restore" }, stdin);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "vault restored") != null);
+    }
+
+    // The new primary passphrase opens the vault and the secret survived.
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, new_primary ++ "\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "TOKEN") != null);
+    }
+
+    // The old primary passphrase no longer works.
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(!r.exitOk());
+    }
+}
+
 test "cr rekey rejects mismatched new passphrase" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

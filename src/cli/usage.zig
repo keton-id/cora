@@ -82,6 +82,7 @@ const top_text =
     \\Subcommands:
     \\  init [path]                          Create encrypted cora.zon
     \\  rekey                                Change the passphrase
+    \\  recovery <backup|restore>            Break-glass recovery passphrase
     \\  unlock [--foreground]                Start background service
     \\  lock                                 Stop service, zero memory
     \\  status                               Show service state
@@ -303,6 +304,26 @@ const rekey_text =
     \\vault and re-encrypts it under a freshly derived key with a new random
     \\salt. The on-disk ciphertext changes completely, so a leaked old
     \\passphrase can no longer open the file. Secrets and policy are preserved.
+    \\
+;
+
+pub fn printRecovery(io: Io, ch: Channel) void {
+    write(io, ch, recovery_text);
+}
+
+const recovery_text =
+    \\cr recovery — Break-glass recovery passphrase
+    \\
+    \\Usage:
+    \\  cr recovery backup                   Write cora.zon.recovery under a
+    \\                                       separate recovery passphrase
+    \\  cr recovery restore                  Rebuild cora.zon from the recovery
+    \\                                       copy under a new passphrase
+    \\
+    \\`backup` seals an independent encrypted copy of the vault so a lost
+    \\primary passphrase is recoverable. It is a point-in-time snapshot: secrets
+    \\changed after backup are not included until you re-run it. `restore`
+    \\overwrites cora.zon from the recovery copy.
     \\
 ;
 
