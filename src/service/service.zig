@@ -674,6 +674,12 @@ pub const Service = struct {
             );
             child_pid = @intCast(child.pid);
 
+            self.emit(.{ .task_spawned = .{
+                .ts_ms = nowMs(self.io),
+                .task = declared_task,
+                .target = resolved,
+                .child_pid = child_pid,
+            } });
             for (injected_names.items) |name| {
                 self.emit(.{ .secret_injected = .{
                     .ts_ms = nowMs(self.io),
@@ -713,6 +719,12 @@ pub const Service = struct {
             var child = try std.process.spawn(self.io, spawn_opts);
             child_pid = childPid(child);
 
+            self.emit(.{ .task_spawned = .{
+                .ts_ms = nowMs(self.io),
+                .task = declared_task,
+                .target = resolved,
+                .child_pid = child_pid,
+            } });
             for (injected_names.items) |name| {
                 self.emit(.{ .secret_injected = .{
                     .ts_ms = nowMs(self.io),
