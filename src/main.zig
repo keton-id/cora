@@ -101,6 +101,22 @@ pub fn main(init: std.process.Init) !void {
         try cmdSecrets(arena, io, default_path, args);
         return;
     }
+    if (std.mem.eql(u8, sub, "daemon")) {
+        try cmdDaemon(arena, io, args);
+        return;
+    }
+    if (std.mem.eql(u8, sub, "rekey")) {
+        if (argvHasHelpFlag(args[2..])) {
+            usage.printRekey(io, .stdout);
+            return;
+        }
+        try cmdRekey(arena, io, default_path);
+        return;
+    }
+    if (std.mem.eql(u8, sub, "recovery")) {
+        try cmdRecovery(arena, io, default_path, args);
+        return;
+    }
 
     std.debug.print("unknown subcommand: {s}\n", .{sub});
     usage.printTop(io, .stderr);
@@ -141,6 +157,9 @@ fn cmdHelp(io: Io, parts: []const []const u8) !void {
     if (std.mem.eql(u8, sub, "exec")) return usage.printExec(io, .stdout);
     if (std.mem.eql(u8, sub, "tui")) return usage.printTui(io, .stdout);
     if (std.mem.eql(u8, sub, "verify")) return usage.printVerify(io, .stdout);
+    if (std.mem.eql(u8, sub, "daemon")) return usage.printDaemon(io, .stdout);
+    if (std.mem.eql(u8, sub, "rekey")) return usage.printRekey(io, .stdout);
+    if (std.mem.eql(u8, sub, "recovery")) return usage.printRecovery(io, .stdout);
     if (std.mem.eql(u8, sub, "version")) return printVersion(io);
     if (usage.isHelpFlag(sub)) return usage.printTop(io, .stdout);
 
@@ -160,6 +179,7 @@ fn cmdHelp(io: Io, parts: []const []const u8) !void {
         if (std.mem.eql(u8, a, "set")) return usage.printSecretsSet(io, .stdout);
         if (std.mem.eql(u8, a, "list")) return usage.printSecretsList(io, .stdout);
         if (std.mem.eql(u8, a, "delete")) return usage.printSecretsDelete(io, .stdout);
+        if (std.mem.eql(u8, a, "import")) return usage.printSecretsImport(io, .stdout);
         std.debug.print("no help topic: secrets {s}\n", .{a});
         usage.printSecrets(io, .stderr);
         std.process.exit(1);
@@ -213,7 +233,18 @@ fn cmdSecrets(arena: std.mem.Allocator, io: Io, path: []const u8, args: []const 
             usage.printSecretsSet(io, .stderr);
             std.process.exit(1);
         }
-        try cmdSecretsSet(arena, io, path, args[3]);
+        var ttl_seconds: i64 = 0;
+        var i: usize = 4;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--ttl") and i + 1 < args.len) {
+                ttl_seconds = std.fmt.parseInt(i64, args[i + 1], 10) catch {
+                    std.debug.print("invalid --ttl value: {s}\n", .{args[i + 1]});
+                    std.process.exit(1);
+                };
+                i += 1;
+            }
+        }
+        try cmdSecretsSet(arena, io, path, args[3], ttl_seconds);
         return;
     }
     if (std.mem.eql(u8, action, "list")) {
@@ -234,6 +265,14 @@ fn cmdSecrets(arena: std.mem.Allocator, io: Io, path: []const u8, args: []const 
             std.process.exit(1);
         }
         try cmdSecretsDelete(arena, io, path, args[3]);
+        return;
+    }
+    if (std.mem.eql(u8, action, "import")) {
+        if (args.len >= 4 and usage.isHelpFlag(args[3])) {
+            usage.printSecretsImport(io, .stdout);
+            return;
+        }
+        try cmdSecretsImport(arena, io, path, args[3..]);
         return;
     }
 
@@ -524,6 +563,46 @@ fn execExitByte(code: i32) u8 {
     return if (low == 0) 1 else low;
 }
 
+/// `cr daemon unit` — print a supervised-service unit template for the
+/// current OS to stdout. Cora deliberately does not auto-start (the operator
+/// holds the passphrase), so the template runs `cr unlock --foreground` and
+/// still prompts on start. Resolves this binary's absolute path via the same
+/// pid→path lookup `cr verify` uses, and the current working directory.
+fn cmdDaemon(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !void {
+    if (args.len < 3 or usage.isHelpFlag(args[2])) {
+        usage.printDaemon(io, if (args.len < 3) .stderr else .stdout);
+        if (args.len < 3) std.process.exit(1);
+        return;
+    }
+    if (!std.mem.eql(u8, args[2], "unit")) {
+        std.debug.print("unknown daemon action: {s}\n", .{args[2]});
+        usage.printDaemon(io, .stderr);
+        std.process.exit(1);
+    }
+
+    const ident = cora.identity.lookupByPid(currentPid()) catch {
+        std.debug.print("could not resolve own binary path\n", .{});
+        std.process.exit(1);
+    };
+
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse {
+        std.debug.print("could not resolve working directory\n", .{});
+        std.process.exit(1);
+    };
+    const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+
+    if (!cora.daemon.hostSupported()) {
+        std.debug.print("no unit template for this OS\n", .{});
+        std.process.exit(1);
+    }
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    try cora.daemon.renderForHost(&aw.writer, ident.path(), cwd);
+    usage.outPrint(io, "{s}", .{aw.written()});
+}
+
 fn cmdVerify(io: Io, args: []const []const u8) !void {
     var pid: i32 = 0;
     var i: usize = 2;
@@ -675,17 +754,36 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     defer next_list.deinit(allocator);
 
     if (is_allow) {
-        for (pol.allowed_callers) |c| try next_list.append(allocator, c);
+        // `--pin` commits the caller to the exact bytes of the binary at
+        // PATH by hashing it now and storing `PATH@sha256=<hex>`. Without it
+        // the entry is path-only and a same-uid attacker who swaps the
+        // binary at PATH still passes the allowlist.
+        var pin = false;
+        for (args[4..]) |a| {
+            if (std.mem.eql(u8, a, "--pin")) pin = true;
+        }
+
         for (pol.allowed_callers) |c| {
-            if (std.mem.eql(u8, c, target)) {
+            if (std.mem.eql(u8, cora.policy.parseCaller(c).path, target)) {
                 usage.outPrint(io, "already allowed: {s}\n", .{target});
                 return;
             }
         }
-        try next_list.append(allocator, target);
-    } else { // is_deny — validated above
+        for (pol.allowed_callers) |c| try next_list.append(allocator, c);
+
+        var entry: []const u8 = target;
+        if (pin) {
+            const h = cora.binhash.hashFileHex(allocator, io, cwd, target) catch {
+                std.debug.print("cannot hash {s} for --pin — is it a readable file?\n", .{target});
+                std.process.exit(1);
+            };
+            entry = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ target, cora.policy.hash_sep, &h });
+        }
+        try next_list.append(allocator, entry);
+    } else { // is_deny — validated above. Match on the path portion so a
+        // pinned entry is removed by its plain PATH.
         for (pol.allowed_callers) |c| {
-            if (!std.mem.eql(u8, c, target)) try next_list.append(allocator, c);
+            if (!std.mem.eql(u8, cora.policy.parseCaller(c).path, target)) try next_list.append(allocator, c);
         }
     }
 
@@ -737,6 +835,8 @@ fn cmdPolicyTask(
         // a flag/flag-value is treated as a secret name. Order between
         // flags and secrets does not matter, but `--target` must be
         // immediately followed by a path (a missing value is rejected).
+        var max_spawns: u32 = 0;
+        var window_ms: i64 = 60_000;
         var i: usize = 5;
         while (i < args.len) : (i += 1) {
             if (std.mem.eql(u8, args[i], "--target")) {
@@ -746,6 +846,32 @@ fn cmdPolicyTask(
                     std.process.exit(1);
                 }
                 try targets.append(allocator, args[i + 1]);
+                i += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--max-spawns")) {
+                if (i + 1 >= args.len) {
+                    std.debug.print("--max-spawns requires a number\n", .{});
+                    usage.printPolicyTaskAdd(io, .stderr);
+                    std.process.exit(1);
+                }
+                max_spawns = std.fmt.parseInt(u32, args[i + 1], 10) catch {
+                    std.debug.print("invalid --max-spawns value: {s}\n", .{args[i + 1]});
+                    std.process.exit(1);
+                };
+                i += 1;
+                continue;
+            }
+            if (std.mem.eql(u8, args[i], "--window-ms")) {
+                if (i + 1 >= args.len) {
+                    std.debug.print("--window-ms requires a number\n", .{});
+                    usage.printPolicyTaskAdd(io, .stderr);
+                    std.process.exit(1);
+                }
+                window_ms = std.fmt.parseInt(i64, args[i + 1], 10) catch {
+                    std.debug.print("invalid --window-ms value: {s}\n", .{args[i + 1]});
+                    std.process.exit(1);
+                };
                 i += 1;
                 continue;
             }
@@ -759,6 +885,8 @@ fn cmdPolicyTask(
             .name = name,
             .allowed_secrets = secrets_list.items,
             .allowed_targets = targets.items,
+            .max_spawns = max_spawns,
+            .window_ms = window_ms,
         });
     } else { // "remove" — validated by caller
         for (pol.tasks) |t| {
@@ -782,6 +910,182 @@ fn cmdPolicyTask(
     usage.outPrint(io, "policy updated\n", .{});
 }
 
+/// `cr rekey` — change the passphrase. Decrypts with the current passphrase,
+/// then re-encrypts the same secrets and policy under a freshly derived key
+/// (new random salt + nonce). The on-disk ciphertext changes entirely, so a
+/// leaked old passphrase can no longer open the new file. Secret values live
+/// in memory only for the span of this call and are zeroed by the defers.
+fn cmdRekey(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    if (!fileExists(io, cwd, path)) {
+        std.debug.print("no {s} — run `cr init` first\n", .{path});
+        std.process.exit(1);
+    }
+
+    var old_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &old_buf);
+    const old_pass = try readSecret("Current passphrase: ", &old_buf);
+
+    const encoded = try cora.store.readFile(allocator, io, cwd, path);
+    defer allocator.free(encoded);
+    var dec = cora.store.decrypt(allocator, io, old_pass, encoded) catch |err| switch (err) {
+        cora.CoraError.AuthFailed => {
+            std.debug.print("authentication failed\n", .{});
+            std.process.exit(1);
+        },
+        else => return err,
+    };
+    defer dec.deinit();
+
+    var new_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &new_buf);
+    const new_pass = try readSecret("New passphrase: ", &new_buf);
+
+    var confirm_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &confirm_buf);
+    const confirm = try readSecret("Confirm new passphrase: ", &confirm_buf);
+
+    if (!std.mem.eql(u8, new_pass, confirm)) {
+        std.debug.print("passphrases do not match\n", .{});
+        std.process.exit(1);
+    }
+    if (new_pass.len < cora.store.min_passphrase_len) {
+        std.debug.print("passphrase too short (min {d} chars)\n", .{cora.store.min_passphrase_len});
+        std.process.exit(1);
+    }
+
+    var store_ = cora.MemStore.init(allocator);
+    defer store_.deinit();
+    try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
+
+    try cora.store.saveSecrets(allocator, io, cwd, path, new_pass, &store_, dec.config_bytes);
+    usage.outPrint(io, "passphrase changed\n", .{});
+}
+
+/// `cr recovery <backup|restore>` — break-glass second passphrase.
+///
+/// `backup` writes `<path>.recovery`, an independent encrypted copy of the
+/// vault sealed under a separate recovery passphrase. `restore` rebuilds the
+/// main vault from that copy under a new primary passphrase, regaining access
+/// when the primary passphrase is lost.
+///
+/// This is a point-in-time snapshot, not a live second key slot: secrets
+/// changed after `backup` are not reflected until `backup` is re-run. That
+/// keeps the on-disk format and the save path untouched — the recovery copy
+/// is just `createEncrypted` under another passphrase — at the cost of manual
+/// refresh. Re-run `cr recovery backup` after changing secrets.
+fn cmdRecovery(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []const []const u8) !void {
+    if (args.len < 3 or usage.isHelpFlag(args[2])) {
+        usage.printRecovery(io, if (args.len < 3) .stderr else .stdout);
+        if (args.len < 3) std.process.exit(1);
+        return;
+    }
+    const action = args[2];
+    const rec_path = try std.fmt.allocPrint(allocator, "{s}.recovery", .{path});
+    defer allocator.free(rec_path);
+    const cwd = Io.Dir.cwd();
+
+    if (std.mem.eql(u8, action, "backup")) {
+        if (!fileExists(io, cwd, path)) {
+            std.debug.print("no {s} — run `cr init` first\n", .{path});
+            std.process.exit(1);
+        }
+        var cur_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &cur_buf);
+        const cur = try readSecret("Current passphrase: ", &cur_buf);
+
+        const encoded = try cora.store.readFile(allocator, io, cwd, path);
+        defer allocator.free(encoded);
+        var dec = cora.store.decrypt(allocator, io, cur, encoded) catch |err| switch (err) {
+            cora.CoraError.AuthFailed => {
+                std.debug.print("authentication failed\n", .{});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer dec.deinit();
+
+        var rec_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &rec_buf);
+        const rec = try readSecret("New recovery passphrase: ", &rec_buf);
+        var rec2_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &rec2_buf);
+        const rec2 = try readSecret("Confirm recovery passphrase: ", &rec2_buf);
+        if (!std.mem.eql(u8, rec, rec2)) {
+            std.debug.print("passphrases do not match\n", .{});
+            std.process.exit(1);
+        }
+
+        var ef = cora.store.createEncrypted(allocator, io, .{
+            .passphrase = rec,
+            .config_bytes = dec.config_bytes,
+            .secrets_plaintext = dec.secrets_plaintext,
+        }) catch |err| switch (err) {
+            cora.CoraError.PassphraseTooShort => {
+                std.debug.print("recovery passphrase too short (min {d} chars)\n", .{cora.store.min_passphrase_len});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer ef.deinit();
+        try cora.store.writeFile(io, cwd, rec_path, ef.bytes);
+        usage.outPrint(io, "recovery copy written to {s}\n", .{rec_path});
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "restore")) {
+        if (!fileExists(io, cwd, rec_path)) {
+            std.debug.print("no {s} — run `cr recovery backup` first\n", .{rec_path});
+            std.process.exit(1);
+        }
+        var rec_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &rec_buf);
+        const rec = try readSecret("Recovery passphrase: ", &rec_buf);
+
+        const encoded = try cora.store.readFile(allocator, io, cwd, rec_path);
+        defer allocator.free(encoded);
+        var dec = cora.store.decrypt(allocator, io, rec, encoded) catch |err| switch (err) {
+            cora.CoraError.AuthFailed => {
+                std.debug.print("authentication failed\n", .{});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer dec.deinit();
+
+        var new_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &new_buf);
+        const new_pass = try readSecret("New passphrase: ", &new_buf);
+        var conf_buf: [256]u8 = undefined;
+        defer std.crypto.secureZero(u8, &conf_buf);
+        const conf = try readSecret("Confirm new passphrase: ", &conf_buf);
+        if (!std.mem.eql(u8, new_pass, conf)) {
+            std.debug.print("passphrases do not match\n", .{});
+            std.process.exit(1);
+        }
+
+        var ef = cora.store.createEncrypted(allocator, io, .{
+            .passphrase = new_pass,
+            .config_bytes = dec.config_bytes,
+            .secrets_plaintext = dec.secrets_plaintext,
+        }) catch |err| switch (err) {
+            cora.CoraError.PassphraseTooShort => {
+                std.debug.print("passphrase too short (min {d} chars)\n", .{cora.store.min_passphrase_len});
+                std.process.exit(1);
+            },
+            else => return err,
+        };
+        defer ef.deinit();
+        try cora.store.writeFile(io, cwd, path, ef.bytes);
+        usage.outPrint(io, "vault restored to {s}\n", .{path});
+        return;
+    }
+
+    std.debug.print("unknown recovery action: {s}\n", .{action});
+    usage.printRecovery(io, .stderr);
+    std.process.exit(1);
+}
+
 fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     var sock_buf: [128]u8 = undefined;
     const sock_path = try cora.service.defaultSocketPath(&sock_buf);
@@ -793,7 +1097,7 @@ fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     usage.outPrint(io, "status: running\n  secrets: {d}\n  idle remaining: {d} ms\n", .{ s.secrets_count, s.idle_remaining_ms });
 }
 
-fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {
+fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8, ttl_seconds: i64) !void {
     const cwd = Io.Dir.cwd();
     if (!fileExists(io, cwd, path)) {
         std.debug.print("no {s} — run `cr init` first\n", .{path});
@@ -838,9 +1142,18 @@ fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []
     defer store_.deinit();
     try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
 
-    try store_.put(key, value);
+    if (ttl_seconds > 0) {
+        const now_ms = Io.Timestamp.now(io, .real).toMilliseconds();
+        try store_.putWithMeta(key, value, now_ms + ttl_seconds * 1000, now_ms);
+    } else {
+        try store_.put(key, value);
+    }
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
-    usage.outPrint(io, "set {s}\n", .{key});
+    if (ttl_seconds > 0) {
+        usage.outPrint(io, "set {s} (expires in {d}s)\n", .{ key, ttl_seconds });
+    } else {
+        usage.outPrint(io, "set {s}\n", .{key});
+    }
 }
 
 fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
@@ -893,6 +1206,86 @@ fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void 
     while (it.next()) |k| usage.outPrint(io, "{s}\n", .{k.*});
 }
 
+/// `cr secrets import --from-env NAME...` — read each named environment
+/// variable from the operator's own environment and store its value in the
+/// vault under the same name. Values never appear on argv (avoiding the
+/// `ps`/shell-history leak of `secrets set VALUE`); they come straight from
+/// the caller's env. A name whose variable is unset is reported and skipped,
+/// not treated as an error, so a partial import still writes what it found.
+fn cmdSecretsImport(allocator: std.mem.Allocator, io: Io, path: []const u8, rest: []const []const u8) !void {
+    if (rest.len == 0 or !std.mem.eql(u8, rest[0], "--from-env")) {
+        usage.printSecretsImport(io, .stderr);
+        std.process.exit(1);
+    }
+    const names = rest[1..];
+    if (names.len == 0) {
+        std.debug.print("no variable names given\n", .{});
+        usage.printSecretsImport(io, .stderr);
+        std.process.exit(1);
+    }
+
+    const cwd = Io.Dir.cwd();
+    if (!fileExists(io, cwd, path)) {
+        std.debug.print("no {s} — run `cr init` first\n", .{path});
+        std.process.exit(1);
+    }
+
+    // Validate all names up front so a bad name never burns the passphrase
+    // entry or leaves a half-written vault.
+    for (names) |name| {
+        if (name.len > cora.secrets_codec.max_key_len) {
+            std.debug.print("key too long: {s} ({d} > {d})\n", .{ name, name.len, cora.secrets_codec.max_key_len });
+            std.process.exit(1);
+        }
+    }
+
+    var pass_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &pass_buf);
+    const passphrase = try readSecret("Passphrase: ", &pass_buf);
+
+    const encoded = try cora.store.readFile(allocator, io, cwd, path);
+    defer allocator.free(encoded);
+    var dec = cora.store.decrypt(allocator, io, passphrase, encoded) catch |err| switch (err) {
+        cora.CoraError.AuthFailed => {
+            std.debug.print("authentication failed\n", .{});
+            std.process.exit(1);
+        },
+        else => return err,
+    };
+    defer dec.deinit();
+
+    var store_ = cora.MemStore.init(allocator);
+    defer store_.deinit();
+    try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
+
+    var imported: usize = 0;
+    for (names) |name| {
+        const name_z = try allocator.dupeZ(u8, name);
+        defer allocator.free(name_z);
+        const val_ptr = std.c.getenv(name_z) orelse {
+            usage.outPrint(io, "skip (not set): {s}\n", .{name});
+            continue;
+        };
+        const value = std.mem.span(val_ptr);
+        store_.put(name, value) catch |err| switch (err) {
+            cora.CoraError.SecretTooLarge => {
+                std.debug.print("skip (value too large): {s}\n", .{name});
+                continue;
+            },
+            else => return err,
+        };
+        imported += 1;
+        usage.outPrint(io, "imported {s}\n", .{name});
+    }
+
+    if (imported == 0) {
+        std.debug.print("nothing imported\n", .{});
+        std.process.exit(1);
+    }
+    try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
+    usage.outPrint(io, "imported {d} secret(s)\n", .{imported});
+}
+
 fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {
     const cwd = Io.Dir.cwd();
     if (!fileExists(io, cwd, path)) {
@@ -938,6 +1331,15 @@ fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key:
     }
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
     usage.outPrint(io, "deleted {s}\n", .{key});
+}
+
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+
+/// Own process id, cross-platform. `std.c.getpid()` returns an opaque handle
+/// on Windows (not an integer), so branch to GetCurrentProcessId there.
+fn currentPid() i32 {
+    if (builtin.os.tag == .windows) return @intCast(GetCurrentProcessId());
+    return @intCast(std.c.getpid());
 }
 
 fn fileExists(io: Io, dir: Io.Dir, path: []const u8) bool {

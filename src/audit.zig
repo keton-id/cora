@@ -10,9 +10,21 @@ pub const Event = union(enum) {
     service_locked: struct { ts_ms: i64, reason: []const u8 },
     caller_rejected: struct { ts_ms: i64, pid: i32, binary: []const u8, reason: []const u8 },
     task_start: struct { ts_ms: i64, caller_pid: i32, caller_bin: []const u8, task: []const u8 },
+    /// Emitted once the spawn target has passed PATH resolution and the
+    /// allowed_targets gate and the child process exists. Records the
+    /// resolved absolute binary that actually ran plus its pid — the piece
+    /// missing from `task_start` (which fires at declare time, before the
+    /// target is known). No argv beyond argv[0]: later args can carry
+    /// caller-chosen data and are not audited to keep the log secret-free.
+    task_spawned: struct { ts_ms: i64, task: []const u8, target: []const u8, child_pid: i32 },
     secret_injected: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     secret_missing: struct { ts_ms: i64, task: []const u8, secret_name: []const u8, target_pid: i32 },
     task_end: struct { ts_ms: i64, task: []const u8, exit_code: i32, duration_ms: i64 },
+    /// Emitted when a spawn is refused because the task exceeded its
+    /// `max_spawns` within `window_ms`. The caller passed identity, caller,
+    /// and target gates; what failed is the rate limit. No target field —
+    /// the spawn is rejected before target resolution.
+    rate_limited: struct { ts_ms: i64, caller_pid: i32, caller_bin: []const u8, task: []const u8 },
     /// Emitted when the spawn target (argv[0] after PATH resolution) is
     /// not in the task's `allowed_targets`. Distinct from `caller_rejected`
     /// — the caller passed kernel identity verification and the task
@@ -139,6 +151,26 @@ pub fn encode(ev: Event, w: *Io.Writer) !void {
             try s.objectField("task");
             try s.write(v.task);
         },
+        .task_spawned => |v| {
+            try s.objectField("ts_ms");
+            try s.write(v.ts_ms);
+            try s.objectField("task");
+            try s.write(v.task);
+            try s.objectField("target");
+            try s.write(v.target);
+            try s.objectField("child_pid");
+            try s.write(v.child_pid);
+        },
+        .rate_limited => |v| {
+            try s.objectField("ts_ms");
+            try s.write(v.ts_ms);
+            try s.objectField("caller_pid");
+            try s.write(v.caller_pid);
+            try s.objectField("caller_bin");
+            try s.write(v.caller_bin);
+            try s.objectField("task");
+            try s.write(v.task);
+        },
         .secret_injected => |v| {
             try s.objectField("ts_ms");
             try s.write(v.ts_ms);
@@ -247,6 +279,37 @@ test "Event union no longer carries windows_preview_mode variant" {
     // removed in the same change; this test catches re-introductions
     // at compile time.
     try std.testing.expect(!@hasField(Event, "windows_preview_mode"));
+}
+
+test "encode rate_limited names task and caller, carries no value" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encode(.{ .rate_limited = .{
+        .ts_ms = 71,
+        .caller_pid = 321,
+        .caller_bin = "/usr/local/bin/cr",
+        .task = "deploy",
+    } }, &aw.writer);
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"rate_limited\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"task\":\"deploy\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
+}
+
+test "encode task_spawned records resolved target and pid" {
+    var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer aw.deinit();
+    try encode(.{ .task_spawned = .{
+        .ts_ms = 55,
+        .task = "deploy",
+        .target = "/usr/bin/gh",
+        .child_pid = 8080,
+    } }, &aw.writer);
+    const out = aw.written();
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"kind\":\"task_spawned\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"target\":\"/usr/bin/gh\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "\"child_pid\":8080") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "value") == null);
 }
 
 test "encode secret_missing distinct from secret_injected" {

@@ -81,13 +81,16 @@ const top_text =
     \\
     \\Subcommands:
     \\  init [path]                          Create encrypted cora.zon
+    \\  rekey                                Change the passphrase
+    \\  recovery <backup|restore>            Break-glass recovery passphrase
     \\  unlock [--foreground]                Start background service
     \\  lock                                 Stop service, zero memory
     \\  status                               Show service state
     \\  exec TASK -- argv...                 Spawn subprocess with task secrets injected
-    \\  secrets <set|list|delete> [KEY]      Manage secrets
+    \\  secrets <set|list|delete|import> ... Manage secrets
     \\  policy <show|allow|deny|task> ...    Manage policy
     \\  audit <tail|show> [opts]             Read audit log
+    \\  daemon unit                          Print a service unit template
     \\  tui                                  Launch interactive TUI menu
     \\  verify --pid PID                     Resolve binary path of a pid (debug)
     \\  version                              Show version
@@ -287,6 +290,63 @@ const tui_text =
 
 // --- verify ---------------------------------------------------------------
 
+pub fn printRekey(io: Io, ch: Channel) void {
+    write(io, ch, rekey_text);
+}
+
+const rekey_text =
+    \\cr rekey — Change the passphrase
+    \\
+    \\Usage:
+    \\  cr rekey
+    \\
+    \\Prompts for the current passphrase, then a new one (twice). Decrypts the
+    \\vault and re-encrypts it under a freshly derived key with a new random
+    \\salt. The on-disk ciphertext changes completely, so a leaked old
+    \\passphrase can no longer open the file. Secrets and policy are preserved.
+    \\
+;
+
+pub fn printRecovery(io: Io, ch: Channel) void {
+    write(io, ch, recovery_text);
+}
+
+const recovery_text =
+    \\cr recovery — Break-glass recovery passphrase
+    \\
+    \\Usage:
+    \\  cr recovery backup                   Write cora.zon.recovery under a
+    \\                                       separate recovery passphrase
+    \\  cr recovery restore                  Rebuild cora.zon from the recovery
+    \\                                       copy under a new passphrase
+    \\
+    \\`backup` seals an independent encrypted copy of the vault so a lost
+    \\primary passphrase is recoverable. It is a point-in-time snapshot: secrets
+    \\changed after backup are not included until you re-run it. `restore`
+    \\overwrites cora.zon from the recovery copy.
+    \\
+;
+
+pub fn printDaemon(io: Io, ch: Channel) void {
+    write(io, ch, daemon_text);
+}
+
+const daemon_text =
+    \\cr daemon — Persistent-service unit templates
+    \\
+    \\Usage:
+    \\  cr daemon unit
+    \\
+    \\Prints a service unit for the current OS (systemd --user on Linux,
+    \\launchd LaunchAgent on macOS) that runs `cr unlock --foreground` from
+    \\the current directory. Cora does not auto-start — the unit still
+    \\prompts for the passphrase on start, keeping the key with the operator.
+    \\
+    \\  cr daemon unit > ~/.config/systemd/user/cora.service   # Linux
+    \\  cr daemon unit > ~/Library/LaunchAgents/dev.cora.agent.plist  # macOS
+    \\
+;
+
 pub fn printVerify(io: Io, ch: Channel) void {
     write(io, ch, verify_text);
 }
@@ -318,12 +378,13 @@ const secrets_text =
     \\cr secrets — Manage secrets in cora.zon
     \\
     \\Usage:
-    \\  cr secrets <set|list|delete> [KEY]
+    \\  cr secrets <set|list|delete|import> [KEY]
     \\
     \\Actions:
     \\  set KEY                              Add or update a secret (prompts for value)
     \\  list                                 List secret names (no values)
     \\  delete KEY                           Remove a secret
+    \\  import --from-env NAME...            Import values from the environment
     \\
     \\Each action prompts for the passphrase, decrypts cora.zon, mutates,
     \\and re-encrypts. The on-disk file is never written in plaintext.
@@ -344,10 +405,16 @@ const secrets_set_text =
     \\cr secrets set — Add or update a secret
     \\
     \\Usage:
-    \\  cr secrets set KEY
+    \\  cr secrets set KEY [--ttl SECONDS]
     \\
     \\Arguments:
     \\  KEY                                  Secret name (env var name)
+    \\
+    \\Flags:
+    \\  --ttl SECONDS                        Expire the secret this many
+    \\                                       seconds from now. After expiry the
+    \\                                       service refuses to inject it (it is
+    \\                                       treated as missing).
     \\
     \\Prompts for the passphrase, then for the secret value (echo masked).
     \\
@@ -384,6 +451,30 @@ const secrets_delete_text =
     \\
     \\Arguments:
     \\  KEY                                  Secret name to remove
+    \\
+;
+
+pub fn printSecretsImport(io: Io, ch: Channel) void {
+    write(io, ch, secrets_import_text);
+}
+
+const secrets_import_text =
+    \\cr secrets import — Import secrets from the environment
+    \\
+    \\Usage:
+    \\  cr secrets import --from-env NAME...
+    \\
+    \\Arguments:
+    \\  NAME...                              Environment variable names to
+    \\                                       import. Each value is read from
+    \\                                       your own environment and stored
+    \\                                       under the same name.
+    \\
+    \\Values come from the environment, never argv, so they do not leak into
+    \\shell history or `ps`. A NAME whose variable is unset is skipped.
+    \\
+    \\  export GH_TOKEN=ghp_...
+    \\  cr secrets import --from-env GH_TOKEN STRIPE_KEY
     \\
 ;
 
@@ -441,10 +532,15 @@ const policy_allow_text =
     \\cr policy allow — Add a binary to allowed_callers
     \\
     \\Usage:
-    \\  cr policy allow PATH
+    \\  cr policy allow PATH [--pin]
     \\
     \\Arguments:
     \\  PATH                                 Absolute path of the caller binary
+    \\
+    \\Flags:
+    \\  --pin                                Pin the caller to the current
+    \\                                       SHA-256 of PATH. A swapped binary
+    \\                                       at the same path is then rejected.
     \\
     \\If allowed_callers is empty, the policy is in dev-mode (allow-all).
     \\Adding any entry switches to explicit allow-list mode.
@@ -493,7 +589,8 @@ const policy_task_add_text =
     \\cr policy task add — Define a task
     \\
     \\Usage:
-    \\  cr policy task add NAME [--target PATH ...] [SECRETS...]
+    \\  cr policy task add NAME [--target PATH ...] [--max-spawns N]
+    \\                    [--window-ms MS] [SECRETS...]
     \\
     \\Arguments:
     \\  NAME                                 Task name
@@ -507,6 +604,13 @@ const policy_task_add_text =
     \\                                       allowed (dev mode) — same
     \\                                       behavior as allowed_callers when
     \\                                       its list is empty.
+    \\  --max-spawns N                       Cap spawns per window (0 = no
+    \\                                       limit, default). Bounds how often
+    \\                                       this task's secrets can be pulled
+    \\                                       into a subprocess.
+    \\  --window-ms MS                       Rate-limit window in ms
+    \\                                       (default 60000). Used with
+    \\                                       --max-spawns.
     \\
     \\Replaces any existing task with the same name.
     \\

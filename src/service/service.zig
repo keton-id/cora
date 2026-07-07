@@ -11,6 +11,8 @@ const policy_mod = @import("../policy/policy.zig");
 const audit = @import("../audit.zig");
 const pipe_windows = @import("pipe_windows.zig");
 const spawn_windows = @import("spawn_windows.zig");
+const binhash = @import("../crypto/binhash.zig");
+const ratelimit = @import("ratelimit.zig");
 const CoraError = @import("../error.zig").CoraError;
 
 /// Per-platform stdio passthrough handle carried from `handle` into
@@ -53,8 +55,31 @@ pub fn defaultSocketPath(buf: []u8) ![]u8 {
     if (builtin.os.tag == .windows) {
         return pipe_windows.defaultPipeNameUtf8(buf);
     }
+    // Explicit override wins: point several shells at one service, or
+    // isolate beyond the per-cwd default. The service (cr unlock) and every
+    // client read the same env, so they agree.
+    if (std.c.getenv("CORA_SOCK")) |p| {
+        const s = std.mem.span(p);
+        if (s.len == 0 or s.len > buf.len) return CoraError.InvalidConfig;
+        @memcpy(buf[0..s.len], s);
+        return buf[0..s.len];
+    }
     const uid: u64 = @intCast(std.c.getuid());
-    return std.fmt.bufPrint(buf, default_socket_format, .{uid});
+    // Per-project: fold a hash of the working directory into the socket name
+    // so `cr unlock` in project A and project B use different sockets and
+    // can be unlocked at once. Same-cwd clients recompute the identical path.
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return CoraError.Io;
+    const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+    return formatPosixSocket(buf, uid, cwd);
+}
+
+/// Build the POSIX per-project socket path: `/tmp/cora-<uid>-<cwdhash>.sock`
+/// where `<cwdhash>` is the first 12 hex chars of SHA-256(cwd). Pure so the
+/// per-project derivation is testable without changing process cwd.
+fn formatPosixSocket(buf: []u8, uid: u64, cwd: []const u8) ![]u8 {
+    const digest = binhash.sha256Hex(cwd);
+    return std.fmt.bufPrint(buf, "/tmp/cora-{d}-{s}.sock", .{ uid, digest[0..12] });
 }
 
 pub const Config = struct {
@@ -185,6 +210,12 @@ pub const Service = struct {
     rejected: std.atomic.Value(u32),
     audit_logger: ?*audit.Logger,
     environ: ?*const std.process.Environ.Map,
+    /// Per-task spawn windows for rate limiting. Keyed by task name, whose
+    /// backing bytes live in `policy` for the service's lifetime, so the
+    /// slice is stored directly without duplication. The accept loop is
+    /// single-threaded, so this map needs no lock (same rationale as the
+    /// rest of the service's shared state).
+    rate_windows: std.StringHashMapUnmanaged(ratelimit.Window),
 
     pub fn start(allocator: std.mem.Allocator, io: Io, cfg: Config, secrets: *MemStore) !Service {
         const server = try Server.start(io, cfg.socket_path);
@@ -200,6 +231,7 @@ pub const Service = struct {
             .rejected = .init(0),
             .audit_logger = cfg.audit_logger,
             .environ = cfg.environ,
+            .rate_windows = .empty,
         };
         svc.emit(.{ .service_unlocked = .{ .ts_ms = nowMs(svc.io) } });
         return svc;
@@ -209,6 +241,17 @@ pub const Service = struct {
         if (self.audit_logger) |l| l.log(ev) catch |err| {
             std.log.warn("audit log error: {s}", .{@errorName(err)});
         };
+    }
+
+    /// Enforce the optional per-caller binary-hash pin. Returns true when the
+    /// caller is unpinned (no requirement) or the binary at `path` hashes to
+    /// the pinned digest. Fails closed: any error hashing the file (missing,
+    /// unreadable) returns false, so a caller that cannot be verified is
+    /// rejected rather than admitted.
+    fn callerHashOk(self: *Service, path: []const u8) bool {
+        const expected = self.policy.callerExpectedHash(path) orelse return true;
+        const got = binhash.hashFileHex(self.allocator, self.io, Io.Dir.cwd(), path) catch return false;
+        return binhash.hexEql(&got, expected);
     }
 
     pub fn run(self: *Service) !void {
@@ -269,6 +312,7 @@ pub const Service = struct {
         if (builtin.os.tag != .windows) {
             Io.Dir.cwd().deleteFile(self.io, self.socket_path) catch {};
         }
+        self.rate_windows.deinit(self.allocator);
         zeroAll(self.secrets);
     }
 
@@ -310,6 +354,19 @@ pub const Service = struct {
                     .reason = "binary not in allowed_callers",
                 } });
                 try proto.writeFrame(&writer.interface, .err, "caller not allowed");
+                try writer.interface.flush();
+                return;
+            }
+
+            if (requiresCallerPolicy(op) and !self.callerHashOk(ident.path())) {
+                _ = self.rejected.fetchAdd(1, .monotonic);
+                self.emit(.{ .caller_rejected = .{
+                    .ts_ms = nowMs(self.io),
+                    .pid = ident.pid,
+                    .binary = ident.path(),
+                    .reason = "caller binary hash mismatch",
+                } });
+                try proto.writeFrame(&writer.interface, .err, "caller hash mismatch");
                 try writer.interface.flush();
                 return;
             }
@@ -552,6 +609,27 @@ pub const Service = struct {
             return CoraError.TargetNotAllowed;
         }
 
+        // Rate-limit gate: bound how many times this task's secrets can be
+        // pulled into a subprocess per window. Checked after the target gate
+        // (so a rejected target does not consume the quota) and before any
+        // secret is touched. Unlimited tasks (max_spawns == 0) short-circuit
+        // inside Window.allow.
+        if (task.max_spawns > 0) {
+            const gop = try self.rate_windows.getOrPut(self.allocator, task.name);
+            if (!gop.found_existing) gop.value_ptr.* = .{};
+            if (!gop.value_ptr.allow(nowMs(self.io), task.max_spawns, task.window_ms)) {
+                self.emit(.{ .rate_limited = .{
+                    .ts_ms = nowMs(self.io),
+                    .caller_pid = ident.pid,
+                    .caller_bin = ident.path(),
+                    .task = declared_task,
+                } });
+                try proto.writeFrame(writer, .err, "rate limit exceeded");
+                try writer.flush();
+                return CoraError.RateLimited;
+            }
+        }
+
         // Rewrite argv[0] in place with the resolved absolute path so the
         // child sees a deterministic argv and the spawn never falls back
         // to its own PATH search (which might pick a different binary).
@@ -582,14 +660,20 @@ pub const Service = struct {
         var missing_names = std.ArrayList([]const u8).empty;
         defer missing_names.deinit(self.allocator);
 
-        var tmp = SecretBuf{};
-        defer tmp.zero();
+        const inject_now = nowMs(self.io);
         for (task.allowed_secrets) |name| {
-            self.secrets.copyInto(name, &tmp) catch {
+            const entry = self.secrets.getEntry(name) orelse {
                 try missing_names.append(self.allocator, name);
                 continue;
             };
-            try env_map.put(name, tmp.constSlice());
+            // An expired secret is treated as missing: it must never reach a
+            // child process, and the audit trail records it via
+            // secret_missing so the operator sees the TTL fired.
+            if (entry.isExpired(inject_now)) {
+                try missing_names.append(self.allocator, name);
+                continue;
+            }
+            try env_map.put(name, entry.secret.constSlice());
             try injected_names.append(self.allocator, name);
         }
 
@@ -649,6 +733,12 @@ pub const Service = struct {
             );
             child_pid = @intCast(child.pid);
 
+            self.emit(.{ .task_spawned = .{
+                .ts_ms = nowMs(self.io),
+                .task = declared_task,
+                .target = resolved,
+                .child_pid = child_pid,
+            } });
             for (injected_names.items) |name| {
                 self.emit(.{ .secret_injected = .{
                     .ts_ms = nowMs(self.io),
@@ -688,6 +778,12 @@ pub const Service = struct {
             var child = try std.process.spawn(self.io, spawn_opts);
             child_pid = childPid(child);
 
+            self.emit(.{ .task_spawned = .{
+                .ts_ms = nowMs(self.io),
+                .task = declared_task,
+                .target = resolved,
+                .child_pid = child_pid,
+            } });
             for (injected_names.items) |name| {
                 self.emit(.{ .secret_injected = .{
                     .ts_ms = nowMs(self.io),
@@ -741,7 +837,7 @@ pub const Service = struct {
 
 fn zeroAll(s: *MemStore) void {
     var it = s.map.iterator();
-    while (it.next()) |entry| entry.value_ptr.*.zero();
+    while (it.next()) |entry| entry.value_ptr.*.secret.zero();
 }
 
 /// Return true when the requested protocol op accesses secret values and
@@ -998,6 +1094,11 @@ pub fn renderPolicy(w: *Io.Writer, pol: *const policy_mod.Policy) !void {
             try w.print("    targets ({d}):\n", .{t.allowed_targets.len});
             for (t.allowed_targets) |tgt| try w.print("      {s}\n", .{tgt});
         }
+        if (t.max_spawns == 0) {
+            try w.print("    rate limit: (none)\n", .{});
+        } else {
+            try w.print("    rate limit: {d} spawns / {d} ms\n", .{ t.max_spawns, t.window_ms });
+        }
     }
 }
 
@@ -1018,6 +1119,30 @@ test "defaultSocketPath builds platform-appropriate path" {
         try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
         try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
     }
+}
+
+test "formatPosixSocket is per-cwd and stable" {
+    var a: [128]u8 = undefined;
+    var b: [128]u8 = undefined;
+    var c: [128]u8 = undefined;
+    const pa = try formatPosixSocket(&a, 501, "/home/x/project-a");
+    const pb = try formatPosixSocket(&b, 501, "/home/x/project-b");
+    const pc = try formatPosixSocket(&c, 501, "/home/x/project-a");
+    // Different working directories → different sockets.
+    try std.testing.expect(!std.mem.eql(u8, pa, pb));
+    // Same working directory (and uid) → identical socket, so a client can
+    // recompute the exact path the service bound.
+    try std.testing.expectEqualStrings(pa, pc);
+    try std.testing.expect(std.mem.startsWith(u8, pa, "/tmp/cora-501-"));
+    try std.testing.expect(std.mem.endsWith(u8, pa, ".sock"));
+}
+
+test "formatPosixSocket varies by uid" {
+    var a: [128]u8 = undefined;
+    var b: [128]u8 = undefined;
+    const pa = try formatPosixSocket(&a, 501, "/same");
+    const pb = try formatPosixSocket(&b, 502, "/same");
+    try std.testing.expect(!std.mem.eql(u8, pa, pb));
 }
 
 test "restrictSocketPermissions forces 0600" {

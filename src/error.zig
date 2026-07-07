@@ -7,6 +7,7 @@ pub const CoraError = error{
     CallerNotAllowed,
     TargetNotAllowed,
     TargetNotFound,
+    RateLimited,
     InvalidConfig,
     InvalidPassphrase,
     PassphraseTooShort,

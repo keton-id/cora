@@ -228,14 +228,28 @@ Plaintext shape of `Policy` (what `cr policy show` reveals):
 .{
     .allowed_callers = .{
         "/usr/local/bin/cr",
-        "/usr/local/bin/claude",
+        // optional @sha256=<hex> pins the caller to an exact binary image
+        "/usr/local/bin/claude@sha256=<64 hex>",
     },
     .idle_timeout_ms = 900000,
     .tasks = .{
-        .{ .name = "claude-task", .allowed_secrets = .{ "ANTHROPIC_API_KEY" } },
+        .{
+            .name = "claude-task",
+            .allowed_secrets = .{ "ANTHROPIC_API_KEY" },
+            // optional spawn rate limit (0 = unlimited)
+            .max_spawns = 0,
+            .window_ms = 60000,
+        },
     },
 }
 ```
+
+Security hardening layers (see CLI above):
+- **Caller hash pinning** — `allowed_callers` entries may carry `@sha256=<hex>`; the service hashes the caller binary at connect time and rejects a mismatch (`cr policy allow PATH --pin`).
+- **Spawn rate limiting** — `Task.max_spawns`/`window_ms` bound how often a task's secrets can be pulled into a subprocess.
+- **Secret TTL** — `cr secrets set KEY --ttl SECONDS`; an expired secret is treated as missing at injection time and never reaches a child.
+- **Per-project socket (POSIX)** — `/tmp/cora-<uid>-<cwdhash>.sock`; two projects unlock at once. `CORA_SOCK` overrides.
+- **Rekey / recovery** — `cr rekey` rotates the passphrase; `cr recovery backup|restore` is a break-glass second passphrase (point-in-time encrypted copy).
 
 Decrypted secrets block (never on disk in this form):
 
@@ -256,18 +270,27 @@ cr                                       # prints usage
 
 # Setup
 cr init [path]                           # default: ./cora.zon
+cr rekey                                 # change passphrase (re-encrypt, fresh salt)
+
+# Recovery (break-glass second passphrase)
+cr recovery backup                       # write <path>.recovery under a recovery passphrase
+cr recovery restore                      # rebuild vault from recovery copy under a new passphrase
 
 # Secret management (always re-encrypts)
-cr secrets set KEY                       # prompts passphrase + value
+cr secrets set KEY [--ttl SECONDS]       # prompts passphrase + value; optional expiry
 cr secrets list                          # prompts passphrase → names only
 cr secrets delete KEY                    # prompts passphrase
+cr secrets import --from-env NAME...     # import values from the environment
 
 # Policy (re-encrypts on each mutation)
-cr policy show                           # callers + idle + tasks
-cr policy allow PATH                     # add binary to allowed_callers
+cr policy show                           # callers + idle + tasks + rate limits
+cr policy allow PATH [--pin]             # add caller; --pin commits to its SHA-256
 cr policy deny PATH                      # remove
-cr policy task add NAME SECRETS...       # define/update task
+cr policy task add NAME SECRETS... [--target PATH] [--max-spawns N] [--window-ms MS]
 cr policy task remove NAME
+
+# Service unit templates
+cr daemon unit                           # print systemd/launchd unit for this OS
 
 # Service lifecycle
 cr unlock [--foreground]                 # daemonizes by default
