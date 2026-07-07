@@ -580,8 +580,7 @@ fn cmdDaemon(allocator: std.mem.Allocator, io: Io, args: []const []const u8) !vo
         std.process.exit(1);
     }
 
-    const self_pid: i32 = @intCast(std.c.getpid());
-    const ident = cora.identity.lookupByPid(self_pid) catch {
+    const ident = cora.identity.lookupByPid(currentPid()) catch {
         std.debug.print("could not resolve own binary path\n", .{});
         std.process.exit(1);
     };
@@ -1332,6 +1331,15 @@ fn cmdSecretsDelete(allocator: std.mem.Allocator, io: Io, path: []const u8, key:
     }
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
     usage.outPrint(io, "deleted {s}\n", .{key});
+}
+
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
+
+/// Own process id, cross-platform. `std.c.getpid()` returns an opaque handle
+/// on Windows (not an integer), so branch to GetCurrentProcessId there.
+fn currentPid() i32 {
+    if (builtin.os.tag == .windows) return @intCast(GetCurrentProcessId());
+    return @intCast(std.c.getpid());
 }
 
 fn fileExists(io: Io, dir: Io.Dir, path: []const u8) bool {
