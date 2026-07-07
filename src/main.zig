@@ -228,7 +228,18 @@ fn cmdSecrets(arena: std.mem.Allocator, io: Io, path: []const u8, args: []const 
             usage.printSecretsSet(io, .stderr);
             std.process.exit(1);
         }
-        try cmdSecretsSet(arena, io, path, args[3]);
+        var ttl_seconds: i64 = 0;
+        var i: usize = 4;
+        while (i < args.len) : (i += 1) {
+            if (std.mem.eql(u8, args[i], "--ttl") and i + 1 < args.len) {
+                ttl_seconds = std.fmt.parseInt(i64, args[i + 1], 10) catch {
+                    std.debug.print("invalid --ttl value: {s}\n", .{args[i + 1]});
+                    std.process.exit(1);
+                };
+                i += 1;
+            }
+        }
+        try cmdSecretsSet(arena, io, path, args[3], ttl_seconds);
         return;
     }
     if (std.mem.eql(u8, action, "list")) {
@@ -958,7 +969,7 @@ fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {
     usage.outPrint(io, "status: running\n  secrets: {d}\n  idle remaining: {d} ms\n", .{ s.secrets_count, s.idle_remaining_ms });
 }
 
-fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8) !void {
+fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []const u8, ttl_seconds: i64) !void {
     const cwd = Io.Dir.cwd();
     if (!fileExists(io, cwd, path)) {
         std.debug.print("no {s} — run `cr init` first\n", .{path});
@@ -1003,9 +1014,18 @@ fn cmdSecretsSet(allocator: std.mem.Allocator, io: Io, path: []const u8, key: []
     defer store_.deinit();
     try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
 
-    try store_.put(key, value);
+    if (ttl_seconds > 0) {
+        const now_ms = Io.Timestamp.now(io, .real).toMilliseconds();
+        try store_.putWithMeta(key, value, now_ms + ttl_seconds * 1000, now_ms);
+    } else {
+        try store_.put(key, value);
+    }
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &store_, dec.config_bytes);
-    usage.outPrint(io, "set {s}\n", .{key});
+    if (ttl_seconds > 0) {
+        usage.outPrint(io, "set {s} (expires in {d}s)\n", .{ key, ttl_seconds });
+    } else {
+        usage.outPrint(io, "set {s}\n", .{key});
+    }
 }
 
 fn cmdSecretsList(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {

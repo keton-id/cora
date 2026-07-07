@@ -660,14 +660,20 @@ pub const Service = struct {
         var missing_names = std.ArrayList([]const u8).empty;
         defer missing_names.deinit(self.allocator);
 
-        var tmp = SecretBuf{};
-        defer tmp.zero();
+        const inject_now = nowMs(self.io);
         for (task.allowed_secrets) |name| {
-            self.secrets.copyInto(name, &tmp) catch {
+            const entry = self.secrets.getEntry(name) orelse {
                 try missing_names.append(self.allocator, name);
                 continue;
             };
-            try env_map.put(name, tmp.constSlice());
+            // An expired secret is treated as missing: it must never reach a
+            // child process, and the audit trail records it via
+            // secret_missing so the operator sees the TTL fired.
+            if (entry.isExpired(inject_now)) {
+                try missing_names.append(self.allocator, name);
+                continue;
+            }
+            try env_map.put(name, entry.secret.constSlice());
             try injected_names.append(self.allocator, name);
         }
 
@@ -831,7 +837,7 @@ pub const Service = struct {
 
 fn zeroAll(s: *MemStore) void {
     var it = s.map.iterator();
-    while (it.next()) |entry| entry.value_ptr.*.zero();
+    while (it.next()) |entry| entry.value_ptr.*.secret.zero();
 }
 
 /// Return true when the requested protocol op accesses secret values and

@@ -252,6 +252,29 @@ test "cr secrets import --from-env stores set vars and skips unset" {
     try std.testing.expect(std.mem.indexOf(u8, list.stdout, "CORA_IMPORT_MISSING") == null);
 }
 
+test "cr secrets set --ttl persists a secret with expiry metadata" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "SHORT_LIVED", "--ttl", "3600" }, pass_line ++ "v\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "expires in 3600s") != null);
+    }
+
+    // The rich (metadata-carrying) value must decode cleanly on the next
+    // read — a broken rich-form roundtrip would fail to list.
+    var list = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+    defer list.deinit(allocator);
+    try std.testing.expect(list.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, list.stdout, "SHORT_LIVED") != null);
+}
+
 test "cr rekey changes passphrase: old fails, new works, secrets survive" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

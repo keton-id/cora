@@ -384,10 +384,16 @@ const secrets_set_text =
     \\cr secrets set — Add or update a secret
     \\
     \\Usage:
-    \\  cr secrets set KEY
+    \\  cr secrets set KEY [--ttl SECONDS]
     \\
     \\Arguments:
     \\  KEY                                  Secret name (env var name)
+    \\
+    \\Flags:
+    \\  --ttl SECONDS                        Expire the secret this many
+    \\                                       seconds from now. After expiry the
+    \\                                       service refuses to inject it (it is
+    \\                                       treated as missing).
     \\
     \\Prompts for the passphrase, then for the secret value (echo masked).
     \\
