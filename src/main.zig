@@ -105,6 +105,14 @@ pub fn main(init: std.process.Init) !void {
         try cmdDaemon(arena, io, args);
         return;
     }
+    if (std.mem.eql(u8, sub, "rekey")) {
+        if (argvHasHelpFlag(args[2..])) {
+            usage.printRekey(io, .stdout);
+            return;
+        }
+        try cmdRekey(arena, io, default_path);
+        return;
+    }
 
     std.debug.print("unknown subcommand: {s}\n", .{sub});
     usage.printTop(io, .stderr);
@@ -146,6 +154,7 @@ fn cmdHelp(io: Io, parts: []const []const u8) !void {
     if (std.mem.eql(u8, sub, "tui")) return usage.printTui(io, .stdout);
     if (std.mem.eql(u8, sub, "verify")) return usage.printVerify(io, .stdout);
     if (std.mem.eql(u8, sub, "daemon")) return usage.printDaemon(io, .stdout);
+    if (std.mem.eql(u8, sub, "rekey")) return usage.printRekey(io, .stdout);
     if (std.mem.eql(u8, sub, "version")) return printVersion(io);
     if (usage.isHelpFlag(sub)) return usage.printTop(io, .stdout);
 
@@ -884,6 +893,58 @@ fn cmdPolicyTask(
     const cwd = Io.Dir.cwd();
     try cora.store.saveSecrets(allocator, io, cwd, path, passphrase, &secrets_store, new_cfg);
     usage.outPrint(io, "policy updated\n", .{});
+}
+
+/// `cr rekey` — change the passphrase. Decrypts with the current passphrase,
+/// then re-encrypts the same secrets and policy under a freshly derived key
+/// (new random salt + nonce). The on-disk ciphertext changes entirely, so a
+/// leaked old passphrase can no longer open the new file. Secret values live
+/// in memory only for the span of this call and are zeroed by the defers.
+fn cmdRekey(allocator: std.mem.Allocator, io: Io, path: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    if (!fileExists(io, cwd, path)) {
+        std.debug.print("no {s} — run `cr init` first\n", .{path});
+        std.process.exit(1);
+    }
+
+    var old_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &old_buf);
+    const old_pass = try readSecret("Current passphrase: ", &old_buf);
+
+    const encoded = try cora.store.readFile(allocator, io, cwd, path);
+    defer allocator.free(encoded);
+    var dec = cora.store.decrypt(allocator, io, old_pass, encoded) catch |err| switch (err) {
+        cora.CoraError.AuthFailed => {
+            std.debug.print("authentication failed\n", .{});
+            std.process.exit(1);
+        },
+        else => return err,
+    };
+    defer dec.deinit();
+
+    var new_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &new_buf);
+    const new_pass = try readSecret("New passphrase: ", &new_buf);
+
+    var confirm_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &confirm_buf);
+    const confirm = try readSecret("Confirm new passphrase: ", &confirm_buf);
+
+    if (!std.mem.eql(u8, new_pass, confirm)) {
+        std.debug.print("passphrases do not match\n", .{});
+        std.process.exit(1);
+    }
+    if (new_pass.len < cora.store.min_passphrase_len) {
+        std.debug.print("passphrase too short (min {d} chars)\n", .{cora.store.min_passphrase_len});
+        std.process.exit(1);
+    }
+
+    var store_ = cora.MemStore.init(allocator);
+    defer store_.deinit();
+    try cora.secrets_codec.decode(allocator, dec.secrets_plaintext, &store_);
+
+    try cora.store.saveSecrets(allocator, io, cwd, path, new_pass, &store_, dec.config_bytes);
+    usage.outPrint(io, "passphrase changed\n", .{});
 }
 
 fn cmdStatus(allocator: std.mem.Allocator, io: Io) !void {

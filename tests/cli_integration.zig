@@ -252,6 +252,64 @@ test "cr secrets import --from-env stores set vars and skips unset" {
     try std.testing.expect(std.mem.indexOf(u8, list.stdout, "CORA_IMPORT_MISSING") == null);
 }
 
+test "cr rekey changes passphrase: old fails, new works, secrets survive" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    const new_pass = "brand new battery staple";
+
+    // Seed a secret under the original passphrase.
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "set", "KEEP_ME" }, pass_line ++ "keepval\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+    }
+
+    // Rekey: current, new, confirm.
+    {
+        const stdin = passphrase ++ "\n" ++ new_pass ++ "\n" ++ new_pass ++ "\n";
+        var r = try runCr(allocator, io, tmp.dir, &.{"rekey"}, stdin);
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "passphrase changed") != null);
+    }
+
+    // Old passphrase no longer decrypts.
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, pass_line);
+        defer r.deinit(allocator);
+        try std.testing.expect(!r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stderr, "authentication failed") != null);
+    }
+
+    // New passphrase works and the secret survived.
+    {
+        var r = try runCr(allocator, io, tmp.dir, &.{ "secrets", "list" }, new_pass ++ "\n");
+        defer r.deinit(allocator);
+        try std.testing.expect(r.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, r.stdout, "KEEP_ME") != null);
+    }
+}
+
+test "cr rekey rejects mismatched new passphrase" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try initFixture(allocator, io, tmp.dir);
+
+    const stdin = passphrase ++ "\n" ++ "new-one-here\n" ++ "different-two\n";
+    var r = try runCr(allocator, io, tmp.dir, &.{"rekey"}, stdin);
+    defer r.deinit(allocator);
+    try std.testing.expect(!r.exitOk());
+    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "passphrases do not match") != null);
+}
+
 // --- Cross-platform parity contracts --------------------------------------
 // Tier 2 (Named Pipes + GetNamedPipeClientProcessId + CreateProcessW
 // daemonize) brings Windows in line with macOS and Linux. The tests

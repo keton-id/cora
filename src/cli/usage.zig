@@ -81,6 +81,7 @@ const top_text =
     \\
     \\Subcommands:
     \\  init [path]                          Create encrypted cora.zon
+    \\  rekey                                Change the passphrase
     \\  unlock [--foreground]                Start background service
     \\  lock                                 Stop service, zero memory
     \\  status                               Show service state
@@ -287,6 +288,23 @@ const tui_text =
 ;
 
 // --- verify ---------------------------------------------------------------
+
+pub fn printRekey(io: Io, ch: Channel) void {
+    write(io, ch, rekey_text);
+}
+
+const rekey_text =
+    \\cr rekey — Change the passphrase
+    \\
+    \\Usage:
+    \\  cr rekey
+    \\
+    \\Prompts for the current passphrase, then a new one (twice). Decrypts the
+    \\vault and re-encrypts it under a freshly derived key with a new random
+    \\salt. The on-disk ciphertext changes completely, so a leaked old
+    \\passphrase can no longer open the file. Secrets and policy are preserved.
+    \\
+;
 
 pub fn printDaemon(io: Io, ch: Channel) void {
     write(io, ch, daemon_text);
