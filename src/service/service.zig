@@ -55,8 +55,31 @@ pub fn defaultSocketPath(buf: []u8) ![]u8 {
     if (builtin.os.tag == .windows) {
         return pipe_windows.defaultPipeNameUtf8(buf);
     }
+    // Explicit override wins: point several shells at one service, or
+    // isolate beyond the per-cwd default. The service (cr unlock) and every
+    // client read the same env, so they agree.
+    if (std.c.getenv("CORA_SOCK")) |p| {
+        const s = std.mem.span(p);
+        if (s.len == 0 or s.len > buf.len) return CoraError.InvalidConfig;
+        @memcpy(buf[0..s.len], s);
+        return buf[0..s.len];
+    }
     const uid: u64 = @intCast(std.c.getuid());
-    return std.fmt.bufPrint(buf, default_socket_format, .{uid});
+    // Per-project: fold a hash of the working directory into the socket name
+    // so `cr unlock` in project A and project B use different sockets and
+    // can be unlocked at once. Same-cwd clients recompute the identical path.
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cwd_ptr = std.c.getcwd(&cwd_buf, cwd_buf.len) orelse return CoraError.Io;
+    const cwd = std.mem.span(@as([*:0]u8, @ptrCast(cwd_ptr)));
+    return formatPosixSocket(buf, uid, cwd);
+}
+
+/// Build the POSIX per-project socket path: `/tmp/cora-<uid>-<cwdhash>.sock`
+/// where `<cwdhash>` is the first 12 hex chars of SHA-256(cwd). Pure so the
+/// per-project derivation is testable without changing process cwd.
+fn formatPosixSocket(buf: []u8, uid: u64, cwd: []const u8) ![]u8 {
+    const digest = binhash.sha256Hex(cwd);
+    return std.fmt.bufPrint(buf, "/tmp/cora-{d}-{s}.sock", .{ uid, digest[0..12] });
 }
 
 pub const Config = struct {
@@ -1090,6 +1113,30 @@ test "defaultSocketPath builds platform-appropriate path" {
         try std.testing.expect(std.mem.startsWith(u8, p, "/tmp/cora-"));
         try std.testing.expect(std.mem.endsWith(u8, p, ".sock"));
     }
+}
+
+test "formatPosixSocket is per-cwd and stable" {
+    var a: [128]u8 = undefined;
+    var b: [128]u8 = undefined;
+    var c: [128]u8 = undefined;
+    const pa = try formatPosixSocket(&a, 501, "/home/x/project-a");
+    const pb = try formatPosixSocket(&b, 501, "/home/x/project-b");
+    const pc = try formatPosixSocket(&c, 501, "/home/x/project-a");
+    // Different working directories → different sockets.
+    try std.testing.expect(!std.mem.eql(u8, pa, pb));
+    // Same working directory (and uid) → identical socket, so a client can
+    // recompute the exact path the service bound.
+    try std.testing.expectEqualStrings(pa, pc);
+    try std.testing.expect(std.mem.startsWith(u8, pa, "/tmp/cora-501-"));
+    try std.testing.expect(std.mem.endsWith(u8, pa, ".sock"));
+}
+
+test "formatPosixSocket varies by uid" {
+    var a: [128]u8 = undefined;
+    var b: [128]u8 = undefined;
+    const pa = try formatPosixSocket(&a, 501, "/same");
+    const pb = try formatPosixSocket(&b, 502, "/same");
+    try std.testing.expect(!std.mem.eql(u8, pa, pb));
 }
 
 test "restrictSocketPermissions forces 0600" {
