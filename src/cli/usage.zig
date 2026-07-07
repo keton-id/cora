@@ -441,10 +441,15 @@ const policy_allow_text =
     \\cr policy allow — Add a binary to allowed_callers
     \\
     \\Usage:
-    \\  cr policy allow PATH
+    \\  cr policy allow PATH [--pin]
     \\
     \\Arguments:
     \\  PATH                                 Absolute path of the caller binary
+    \\
+    \\Flags:
+    \\  --pin                                Pin the caller to the current
+    \\                                       SHA-256 of PATH. A swapped binary
+    \\                                       at the same path is then rejected.
     \\
     \\If allowed_callers is empty, the policy is in dev-mode (allow-all).
     \\Adding any entry switches to explicit allow-list mode.

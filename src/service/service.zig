@@ -11,6 +11,7 @@ const policy_mod = @import("../policy/policy.zig");
 const audit = @import("../audit.zig");
 const pipe_windows = @import("pipe_windows.zig");
 const spawn_windows = @import("spawn_windows.zig");
+const binhash = @import("../crypto/binhash.zig");
 const CoraError = @import("../error.zig").CoraError;
 
 /// Per-platform stdio passthrough handle carried from `handle` into
@@ -211,6 +212,17 @@ pub const Service = struct {
         };
     }
 
+    /// Enforce the optional per-caller binary-hash pin. Returns true when the
+    /// caller is unpinned (no requirement) or the binary at `path` hashes to
+    /// the pinned digest. Fails closed: any error hashing the file (missing,
+    /// unreadable) returns false, so a caller that cannot be verified is
+    /// rejected rather than admitted.
+    fn callerHashOk(self: *Service, path: []const u8) bool {
+        const expected = self.policy.callerExpectedHash(path) orelse return true;
+        const got = binhash.hashFileHex(self.allocator, self.io, Io.Dir.cwd(), path) catch return false;
+        return binhash.hexEql(&got, expected);
+    }
+
     pub fn run(self: *Service) !void {
         var idle_thread = try std.Thread.spawn(.{}, idleWatch, .{self});
         defer idle_thread.join();
@@ -310,6 +322,19 @@ pub const Service = struct {
                     .reason = "binary not in allowed_callers",
                 } });
                 try proto.writeFrame(&writer.interface, .err, "caller not allowed");
+                try writer.interface.flush();
+                return;
+            }
+
+            if (requiresCallerPolicy(op) and !self.callerHashOk(ident.path())) {
+                _ = self.rejected.fetchAdd(1, .monotonic);
+                self.emit(.{ .caller_rejected = .{
+                    .ts_ms = nowMs(self.io),
+                    .pid = ident.pid,
+                    .binary = ident.path(),
+                    .reason = "caller binary hash mismatch",
+                } });
+                try proto.writeFrame(&writer.interface, .err, "caller hash mismatch");
                 try writer.interface.flush();
                 return;
             }

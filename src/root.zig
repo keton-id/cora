@@ -4,6 +4,7 @@ pub const MemStore = @import("store/mem.zig").MemStore;
 pub const CoraError = @import("error.zig").CoraError;
 pub const derive = @import("crypto/derive.zig");
 pub const aead = @import("crypto/aead.zig");
+pub const binhash = @import("crypto/binhash.zig");
 pub const format = @import("store/format.zig");
 pub const store = @import("store/store.zig");
 pub const secrets_codec = @import("store/secrets_codec.zig");
@@ -22,6 +23,7 @@ test {
     _ = @import("error.zig");
     _ = @import("crypto/derive.zig");
     _ = @import("crypto/aead.zig");
+    _ = @import("crypto/binhash.zig");
     _ = @import("store/format.zig");
     _ = @import("store/store.zig");
     _ = @import("store/secrets_codec.zig");

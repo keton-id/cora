@@ -20,6 +20,32 @@ pub const Task = struct {
     allowed_targets: []const []const u8 = &.{},
 };
 
+/// Separator embedded in an `allowed_callers` entry to pin the caller to a
+/// specific binary image: `"/usr/local/bin/cr@sha256=<64 hex>"`. Entries
+/// without the separator are path-only (unpinned) and preserve backward
+/// compatibility with configs written before hash pinning existed.
+pub const hash_sep = "@sha256=";
+
+pub const Caller = struct {
+    path: []const u8,
+    /// Lowercase-hex SHA-256 the caller binary must hash to, or null when the
+    /// entry is path-only. Borrowed from the source entry.
+    expected_hex: ?[]const u8,
+};
+
+/// Split an `allowed_callers` entry into its path and optional pinned hash.
+/// The path is everything before the first `@sha256=`; the hash is the
+/// remainder. A path-only entry returns `expected_hex = null`.
+pub fn parseCaller(entry: []const u8) Caller {
+    if (std.mem.indexOf(u8, entry, hash_sep)) |idx| {
+        return .{
+            .path = entry[0..idx],
+            .expected_hex = entry[idx + hash_sep.len ..],
+        };
+    }
+    return .{ .path = entry, .expected_hex = null };
+}
+
 pub const Policy = struct {
     allowed_callers: []const []const u8 = &.{},
     idle_timeout_ms: i64 = default_idle_timeout_ms,
@@ -28,9 +54,21 @@ pub const Policy = struct {
     pub fn isCallerAllowed(self: *const Policy, path: []const u8) bool {
         if (self.allowed_callers.len == 0) return true;
         for (self.allowed_callers) |a| {
-            if (std.mem.eql(u8, a, path)) return true;
+            if (std.mem.eql(u8, parseCaller(a).path, path)) return true;
         }
         return false;
+    }
+
+    /// Return the pinned hash requirement for the caller at `path`, or null
+    /// when the matching entry is path-only (or nothing matches). The service
+    /// uses this to decide whether to hash the caller's binary and fail
+    /// closed on mismatch.
+    pub fn callerExpectedHash(self: *const Policy, path: []const u8) ?[]const u8 {
+        for (self.allowed_callers) |a| {
+            const c = parseCaller(a);
+            if (std.mem.eql(u8, c.path, path)) return c.expected_hex;
+        }
+        return null;
     }
 
     pub fn findTask(self: *const Policy, name: []const u8) ?*const Task {
@@ -141,6 +179,33 @@ test "allow/deny mutation preserves tasks" {
     try std.testing.expectEqual(@as(usize, 1), back.tasks[0].allowed_secrets.len);
     try std.testing.expectEqualStrings("API_KEY", back.tasks[0].allowed_secrets[0]);
     try std.testing.expectEqual(@as(usize, 2), back.allowed_callers.len);
+}
+
+test "parseCaller splits path and pinned hash" {
+    const c = parseCaller("/usr/local/bin/cr@sha256=abc123");
+    try std.testing.expectEqualStrings("/usr/local/bin/cr", c.path);
+    try std.testing.expect(c.expected_hex != null);
+    try std.testing.expectEqualStrings("abc123", c.expected_hex.?);
+}
+
+test "parseCaller plain path has no hash" {
+    const c = parseCaller("/bin/agent");
+    try std.testing.expectEqualStrings("/bin/agent", c.path);
+    try std.testing.expect(c.expected_hex == null);
+}
+
+test "isCallerAllowed matches on path portion of pinned entry" {
+    const p = Policy{ .allowed_callers = &.{"/usr/local/bin/cr@sha256=deadbeef"} };
+    try std.testing.expect(p.isCallerAllowed("/usr/local/bin/cr"));
+    try std.testing.expect(!p.isCallerAllowed("/usr/local/bin/cr@sha256=deadbeef"));
+    try std.testing.expect(!p.isCallerAllowed("/bin/evil"));
+}
+
+test "callerExpectedHash returns pin only for pinned entries" {
+    const p = Policy{ .allowed_callers = &.{ "/bin/plain", "/bin/pinned@sha256=cafe" } };
+    try std.testing.expect(p.callerExpectedHash("/bin/plain") == null);
+    try std.testing.expectEqualStrings("cafe", p.callerExpectedHash("/bin/pinned").?);
+    try std.testing.expect(p.callerExpectedHash("/bin/absent") == null);
 }
 
 test "isTargetAllowedForTask: empty list is dev-mode allow-all" {

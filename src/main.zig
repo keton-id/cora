@@ -675,17 +675,36 @@ fn cmdPolicy(allocator: std.mem.Allocator, io: Io, path: []const u8, args: []con
     defer next_list.deinit(allocator);
 
     if (is_allow) {
-        for (pol.allowed_callers) |c| try next_list.append(allocator, c);
+        // `--pin` commits the caller to the exact bytes of the binary at
+        // PATH by hashing it now and storing `PATH@sha256=<hex>`. Without it
+        // the entry is path-only and a same-uid attacker who swaps the
+        // binary at PATH still passes the allowlist.
+        var pin = false;
+        for (args[4..]) |a| {
+            if (std.mem.eql(u8, a, "--pin")) pin = true;
+        }
+
         for (pol.allowed_callers) |c| {
-            if (std.mem.eql(u8, c, target)) {
+            if (std.mem.eql(u8, cora.policy.parseCaller(c).path, target)) {
                 usage.outPrint(io, "already allowed: {s}\n", .{target});
                 return;
             }
         }
-        try next_list.append(allocator, target);
-    } else { // is_deny — validated above
+        for (pol.allowed_callers) |c| try next_list.append(allocator, c);
+
+        var entry: []const u8 = target;
+        if (pin) {
+            const h = cora.binhash.hashFileHex(allocator, io, cwd, target) catch {
+                std.debug.print("cannot hash {s} for --pin — is it a readable file?\n", .{target});
+                std.process.exit(1);
+            };
+            entry = try std.fmt.allocPrint(allocator, "{s}{s}{s}", .{ target, cora.policy.hash_sep, &h });
+        }
+        try next_list.append(allocator, entry);
+    } else { // is_deny — validated above. Match on the path portion so a
+        // pinned entry is removed by its plain PATH.
         for (pol.allowed_callers) |c| {
-            if (!std.mem.eql(u8, c, target)) try next_list.append(allocator, c);
+            if (!std.mem.eql(u8, cora.policy.parseCaller(c).path, target)) try next_list.append(allocator, c);
         }
     }
 
