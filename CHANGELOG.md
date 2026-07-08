@@ -24,6 +24,30 @@ mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
 model.
 -->
 
+## [0.11.0-alpha.2](https://github.com/keton-id/cora/compare/v0.10.1-alpha.2...v0.11.0-alpha.2) (2026-07-07)
+
+
+### Features
+
+* audit the resolved spawn target with task_spawned event ([adcc684](https://github.com/keton-id/cora/commit/adcc684d919e91180b4aef1c80b050a7dfe111d0))
+* cr daemon unit — supervised-service templates ([c0d3a67](https://github.com/keton-id/cora/commit/c0d3a67098d171773b4ebb87f5afbde96cf95c1c))
+* cr recovery backup/restore — break-glass second passphrase ([1d7923c](https://github.com/keton-id/cora/commit/1d7923ccb389112ec18d784c8cdbf5a89e0a20c6))
+* cr rekey — change the passphrase ([5480cdf](https://github.com/keton-id/cora/commit/5480cdfe2c1de2ac93fd2fbde0dae52aae76586a))
+* cr secrets import --from-env ([d4c4d16](https://github.com/keton-id/cora/commit/d4c4d16baafa659b619e494351274375fa0e84fc))
+* per-project socket on POSIX + CORA_SOCK override ([9aa07ec](https://github.com/keton-id/cora/commit/9aa07eca7eeaee582637ee01dc8a62fba1d33d52))
+
+
+### Bug Fixes
+
+* cross-platform currentPid for cr daemon ([b9091bb](https://github.com/keton-id/cora/commit/b9091bb3b980b22e24edf38d82dda0205abbc232))
+
+
+### Security
+
+* per-secret TTL / expiry ([961396b](https://github.com/keton-id/cora/commit/961396be23f93242fb86ec450c4853ba92b861d1))
+* per-task spawn rate limiting ([ab7ecc3](https://github.com/keton-id/cora/commit/ab7ecc38c3e41306be304061ba9148597324a152))
+* pin allowed callers to binary SHA-256 ([9433438](https://github.com/keton-id/cora/commit/9433438a02a146d8b876a615610efaa758a23113))
+
 ## [0.10.1-alpha.2](https://github.com/keton-id/cora/compare/v0.10.0-alpha.2...v0.10.1-alpha.2) (2026-07-04)
 
 
