@@ -24,6 +24,13 @@ mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
 model.
 -->
 
+## [0.11.0](https://github.com/keton-id/cora/compare/v0.11.0-alpha.2...v0.11.0) (2026-07-09)
+
+
+### Misc
+
+* graduate to stable 0.11.0 release ([#73](https://github.com/keton-id/cora/issues/73)) ([9284f73](https://github.com/keton-id/cora/commit/9284f731ce110c059d176b1a3722d54361e586ab))
+
 ## [0.11.0-alpha.2](https://github.com/keton-id/cora/compare/v0.10.1-alpha.2...v0.11.0-alpha.2) (2026-07-07)
 
 
