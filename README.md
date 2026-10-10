@@ -67,16 +67,22 @@ curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh | sh
 Fetches the latest stable release for your OS/arch, verifies the SHA256
 checksum, and installs to `/usr/local/bin` (or `~/.local/bin` without sudo).
 
+Update the direct install later with:
+
+```bash
+cr update
+```
+
+`cr update` updates package-manager installs through Homebrew, Scoop, or
+npm. Windows direct installs finish after the running `cr` process exits;
+check `%TEMP%\cora-update-<pid>.log` for the result.
+
 Flags:
 
 ```bash
-# Pin a specific tag (per-OS form — the script auto-prefixes if you pass plain X.Y.Z)
+# Pin a stable release version (the script prefixes `v` automatically)
 curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
     | sh -s -- --version 1.0.0
-
-# Track a prerelease channel for your OS
-curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
-    | sh -s -- --channel alpha
 ```
 
 **Windows (PowerShell):**

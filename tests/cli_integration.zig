@@ -144,6 +144,25 @@ test "cr binary is installed at expected path" {
     try dir.access(std.testing.io, basename, .{});
 }
 
+test "cr update help is available without starting the updater" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const commands = [_][]const []const u8{
+        &.{ "update", "--help" },
+        &.{ "help", "update" },
+    };
+    for (commands) |args| {
+        var result = try runCr(allocator, io, tmp.dir, args, "");
+        defer result.deinit(allocator);
+        try std.testing.expect(result.exitOk());
+        try std.testing.expect(std.mem.indexOf(u8, result.stdout, "cr update") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.stdout, "latest stable release") != null);
+    }
+}
+
 const passphrase = "correct horse battery staple";
 const pass_line = passphrase ++ "\n";
 const init_stdin = passphrase ++ "\n" ++ passphrase ++ "\n";

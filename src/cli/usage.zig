@@ -92,6 +92,7 @@ const top_text =
     \\  audit <tail|show> [opts]             Read audit log
     \\  daemon unit                          Print a service unit template
     \\  tui                                  Launch interactive TUI menu
+    \\  update                               Update Cora to the latest stable release
     \\  verify --pid PID                     Resolve binary path of a pid (debug)
     \\  version                              Show version
     \\
@@ -100,6 +101,24 @@ const top_text =
     \\  -V, --version                        Show version
     \\
     \\Run `cr help <subcommand>` for details on a subcommand.
+    \\
+;
+
+// --- update ---------------------------------------------------------------
+
+pub fn printUpdate(io: Io, ch: Channel) void {
+    write(io, ch, update_text);
+}
+
+const update_text =
+    \\cr update — Update Cora
+    \\
+    \\Usage:
+    \\  cr update
+    \\
+    \\Installs the latest stable release. Package-manager installations are
+    \\updated through their owning manager. On Windows, a direct installation
+    \\is updated after this process exits; see `%TEMP%\\cora-update-<pid>.log`.
     \\
 ;
 
