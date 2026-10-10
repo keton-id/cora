@@ -43,7 +43,9 @@ fn detectInstallSource(path: []const u8, os: std.Target.Os.Tag) InstallSource {
     if (os == .windows and containsPath(path, "\\scoop\\apps\\cora\\", true)) return .scoop;
     if (containsPath(path, "/_npx/", os == .windows)) return .npx_cache;
 
-    if (containsPath(path, "/node_modules/@keton-id/cora-", os == .windows)) {
+    if (containsPath(path, "/node_modules/@keton-id/cora/", os == .windows) or
+        containsPath(path, "/node_modules/@keton-id/cora-", os == .windows))
+    {
         if (containsPath(path, "/lib/node_modules/@keton-id/", os == .windows) or
             containsPath(path, "/npm/node_modules/@keton-id/", os == .windows))
         {
@@ -217,12 +219,13 @@ test "detects Cora package manager installations without matching ordinary paths
     try std.testing.expectEqual(InstallSource.homebrew, detectInstallSource("/opt/homebrew/Cellar/cora/0.11.0/bin/cr", .macos));
     try std.testing.expectEqual(InstallSource.homebrew, detectInstallSource("/home/linuxbrew/.linuxbrew/Cellar/cora/0.11.0/bin/cr", .linux));
     try std.testing.expectEqual(InstallSource.scoop, detectInstallSource("C:\\Users\\test\\scoop\\apps\\cora\\current\\cr.exe", .windows));
-    try std.testing.expectEqual(InstallSource.npm_global, detectInstallSource("/usr/local/lib/node_modules/@keton-id/cora-linux-x64/bin/cr", .linux));
+    try std.testing.expectEqual(InstallSource.npm_global, detectInstallSource("/usr/local/lib/node_modules/@keton-id/cora/bin/native/cr", .linux));
+    try std.testing.expectEqual(InstallSource.npm_local, detectInstallSource("/work/project/node_modules/@keton-id/cora/bin/native/cr", .linux));
+    try std.testing.expectEqual(InstallSource.npm_global, detectInstallSource("C:\\Users\\test\\AppData\\Roaming\\npm\\node_modules\\@keton-id\\cora\\bin\\native\\cr.exe", .windows));
     try std.testing.expectEqual(InstallSource.npm_local, detectInstallSource("/work/project/node_modules/@keton-id/cora-linux-x64/bin/cr", .linux));
-    try std.testing.expectEqual(InstallSource.npm_global, detectInstallSource("C:\\Users\\test\\AppData\\Roaming\\npm\\node_modules\\@keton-id\\cora-win32-x64\\bin\\cr.exe", .windows));
-    try std.testing.expectEqual(InstallSource.npx_cache, detectInstallSource("/home/test/.npm/_npx/hash/node_modules/@keton-id/cora-linux-x64/bin/cr", .linux));
+    try std.testing.expectEqual(InstallSource.npx_cache, detectInstallSource("/home/test/.npm/_npx/hash/node_modules/@keton-id/cora/bin/native/cr", .linux));
     try std.testing.expectEqual(InstallSource.manual, detectInstallSource("/home/test/.local/bin/cr", .linux));
     try std.testing.expectEqual(InstallSource.development, detectInstallSource("/work/cora/zig-out/bin/cr", .linux));
-    try std.testing.expectEqualStrings("/work/project", npmProjectRoot("/work/project/node_modules/@keton-id/cora-linux-x64/bin/cr", false).?);
-    try std.testing.expectEqualStrings("C:\\work\\project", npmProjectRoot("C:\\work\\project\\node_modules\\@keton-id\\cora-win32-x64\\bin\\cr.exe", true).?);
+    try std.testing.expectEqualStrings("/work/project", npmProjectRoot("/work/project/node_modules/@keton-id/cora/bin/native/cr", false).?);
+    try std.testing.expectEqualStrings("C:\\work\\project", npmProjectRoot("C:\\work\\project\\node_modules\\@keton-id\\cora\\bin\\native\\cr.exe", true).?);
 }

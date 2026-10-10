@@ -44,7 +44,7 @@ jobs:
             exit 1
           fi
           VERSION="${TAG#v}"
-          MATRIX='{"include":[{"target":"aarch64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"arm64"},{"target":"x86_64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"x64"},{"target":"x86_64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"x64"},{"target":"aarch64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"arm64"},{"target":"x86_64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"x64"},{"target":"aarch64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"arm64"}]}'
+          MATRIX='{"include":[{"target":"aarch64-macos","runner":"macos-latest"},{"target":"x86_64-macos","runner":"macos-latest"},{"target":"x86_64-linux","runner":"ubuntu-latest"},{"target":"aarch64-linux","runner":"ubuntu-latest"},{"target":"x86_64-windows-gnu","runner":"ubuntu-latest"},{"target":"aarch64-windows-gnu","runner":"ubuntu-latest"}]}'
           {
             echo "value=$TAG"
             echo "version=$VERSION"
@@ -235,92 +235,50 @@ jobs:
           git commit -m "cora ${VERSION}"
           git push
 
-  publish-npm-subpackage:
-    name: publish npm subpackage ${{ matrix.target }}
+  publish-npm:
+    name: publish @keton-id/cora
     needs: [resolve, publish]
     runs-on: ubuntu-latest
     environment: Release
     permissions:
       contents: read
       id-token: write
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
     steps:
+      # The package installer is taken from main so a failed publish for an
+      # existing vX.Y.Z tag can be retried with corrected launcher code. Its
+      # manifest version still points postinstall at this run's release tag.
       - uses: actions/checkout@v4
         with:
           path: cora
-          ref: ${{ needs.resolve.outputs.tag }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: cr-${{ matrix.target }}
-          path: dist
+          ref: main
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           registry-url: https://registry.npmjs.org
           scope: '@keton-id'
       - run: npm install --global npm@latest
-      - name: Prepare subpackage tree
+      - name: Prepare single npm package
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
-          NPM_PLATFORM: ${{ matrix.npm_platform }}
-          NPM_ARCH: ${{ matrix.npm_arch }}
-          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          node cora/packaging/npm/scripts/prepare-subpackage.mjs \
+          node cora/packaging/npm/scripts/prepare-package.mjs \
             --version "$VERSION" \
-            --platform "$NPM_PLATFORM" \
-            --arch "$NPM_ARCH" \
-            --target "$TARGET" \
-            --dist dist \
-            --out subpackage
-      - name: Publish subpackage with npm Trusted Publishing
-        working-directory: subpackage
+            --src cora/packaging/npm/meta \
+            --license cora/LICENSE \
+            --out npm-package
+      - name: Publish @keton-id/cora with npm Trusted Publishing
+        working-directory: npm-package
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
-          NPM_PLATFORM: ${{ matrix.npm_platform }}
-          NPM_ARCH: ${{ matrix.npm_arch }}
         run: |
           set -euo pipefail
-          PKG="@keton-id/cora-${NPM_PLATFORM}-${NPM_ARCH}"
-          if npm view "${PKG}@${VERSION}" version --prefer-online 2>/dev/null; then
-            echo "${PKG}@${VERSION} already exists; skipping publish"
+          PKG="@keton-id/cora@${VERSION}"
+          if npm view "$PKG" version --prefer-online 2>/dev/null; then
+            echo "$PKG already exists; skipping publish"
             exit 0
           fi
           npm publish --access public
-
-  publish-npm-meta:
-    name: publish npm meta package
-    needs: [resolve, publish, publish-npm-subpackage]
-    runs-on: ubuntu-latest
-    environment: Release
-    permissions:
-      contents: read
-      id-token: write
-    concurrency:
-      group: npm-meta-npmjs
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: cora
-          ref: ${{ needs.resolve.outputs.tag }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          registry-url: https://registry.npmjs.org
-          scope: '@keton-id'
-      - run: npm install --global npm@latest
-      - name: Prepare and publish meta package with npm Trusted Publishing
-        env:
-          VERSION: ${{ needs.resolve.outputs.version }}
-          REGISTRY_URL: https://registry.npmjs.org
-        run: |
-          set -euo pipefail
-          node cora/packaging/npm/scripts/prepare-meta.mjs \
-            --version "$VERSION" \
-            --src cora/packaging/npm/meta \
-            --out meta \
-            --registry "$REGISTRY_URL"

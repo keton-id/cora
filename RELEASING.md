@@ -1,9 +1,8 @@
 # Releasing Cora
 
 Cora publishes one stable release for all supported operating systems at
-`v<X.Y.Z>`. The release builds six targets, attaches their archives to a
-single GitHub Release titled `Cora v<X.Y.Z>`, and publishes the npm
-subpackages and launcher at that version.
+`v<X.Y.Z>`. Each release has six binary archives and one npm package:
+`@keton-id/cora`.
 
 ## Release flow
 
@@ -13,11 +12,11 @@ subpackages and launcher at that version.
 3. Merge the release PR. Its `v<X.Y.Z>` tag starts
    `.github/workflows/release.yml`.
 4. The workflow builds macOS, Linux, and Windows for x64 and ARM64,
-   publishes one GitHub Release, updates Homebrew and Scoop, and
-   publishes all npm packages.
+   publishes one GitHub Release titled `Cora v<X.Y.Z>`, updates
+   Homebrew and Scoop, and publishes `@keton-id/cora`.
 
-The release workflow accepts a plain stable `v<X.Y.Z>` tag only. Alpha
-and per-OS tags are not part of the release process.
+The release workflow accepts stable `v<X.Y.Z>` tags only. There are no
+alpha or per-OS release channels.
 
 ## Version source
 
@@ -30,30 +29,30 @@ Use the `Release-As: X.Y.Z` footer to request a specific next version.
 
 Each GitHub Release contains six archives, one `.sha256` sidecar per
 archive, and `SHA256SUMS`. Windows targets are ZIPs; macOS and Linux
-targets are tarballs. Installers and package-manager manifests use the
-same release tag and checksums.
+targets are tarballs. Installers, Homebrew, and Scoop use the same tag
+and checksums.
 
 ## npm Trusted Publishing
 
-All seven public packages publish to npmjs.org through npm Trusted
-Publishing (GitHub Actions OIDC); no `NPM_TOKEN` is used. Before the
-first publish, register each package on npmjs.com with:
+Only `@keton-id/cora` is published to npmjs.org. Its postinstall script
+downloads the archive for the current OS and architecture from the
+matching `v<X.Y.Z>` GitHub Release and verifies the SHA256 sidecar.
 
+Register one Trusted Publisher on npmjs.com:
+
+- Package: `@keton-id/cora`
 - Repository: `keton-id/cora`
 - Workflow file: `.github/workflows/release.yml`
 - Environment: `Release`
 
-Register `@keton-id/cora` and each of its six platform packages:
-`@keton-id/cora-darwin-x64`, `@keton-id/cora-darwin-arm64`,
-`@keton-id/cora-linux-x64`, `@keton-id/cora-linux-arm64`,
-`@keton-id/cora-win32-x64`, and `@keton-id/cora-win32-arm64`.
-
-The GitHub Packages mirror is no longer published. npm consumers use
-npmjs.org.
+Publishing uses GitHub Actions OIDC; no `NPM_TOKEN` is required. The
+GitHub Packages mirror and per-platform npm packages are not published.
 
 ## Recovering a failed release
 
 Do not delete or move a release tag. Re-run the **release** workflow
-with the existing `v<X.Y.Z>` tag. Builds and asset uploads replace
-matching release assets; npm publish steps skip package versions that
-already exist.
+with the existing `v<X.Y.Z>` tag. Asset uploads replace matching files,
+and the npm publish job skips a package version that already exists.
+The npm wrapper is checked out from `main` and its version is pinned to
+the requested release tag, so a failed npm publish can be retried after
+the package installer is fixed without rebuilding the tagged binary.

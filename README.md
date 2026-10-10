@@ -152,14 +152,11 @@ Or one-shot via `npx`:
 npx @keton-id/cora --help
 ```
 
-The meta `@keton-id/cora` package is a tiny ESM launcher with six
-`optionalDependencies` — one per `<platform>-<arch>` subpackage. npm
-uses each subpackage's `os`/`cpu` fields at install time to silently
-skip the five that don't match your host, so only the matching prebuilt
-`cr` binary lands on disk. No postinstall download, no native node
-addon, no `vendor/` bundle. Only stable releases publish to npm. The
-meta package and every platform subpackage share the same release
-version.
+`@keton-id/cora` is the only npm package. Its postinstall script
+downloads the matching native binary from the same `v<X.Y.Z>` GitHub
+Release and verifies the archive's SHA256 checksum. npm installs no
+platform-specific packages; one release version covers all supported
+operating systems and architectures.
 
 </details>
 
