@@ -24,6 +24,13 @@ mirror-tags workflow. See [RELEASING.md](./RELEASING.md) for the full
 model.
 -->
 
+## [0.12.1](https://github.com/keton-id/cora/compare/v0.12.0...v0.12.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* **npm:** publish one OIDC package ([#76](https://github.com/keton-id/cora/issues/76)) ([c022caf](https://github.com/keton-id/cora/commit/c022caf46a2b00a88482e13062a8af951aad82ec))
+
 ## [0.12.0](https://github.com/keton-id/cora/compare/v0.11.0...v0.12.0) (2026-10-10)
 
 
