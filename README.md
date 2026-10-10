@@ -4,24 +4,10 @@
 [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL--3.0--only-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/keton-id/cora/pulls)
 
-**Stable latest**
+**Latest release**
 
-[![macOS](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/stable-macos.json)](https://github.com/keton-id/cora/releases?q=cora-macos-)
-[![Linux](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/stable-linux.json)](https://github.com/keton-id/cora/releases?q=cora-linux-)
-[![Windows](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/stable-windows.json)](https://github.com/keton-id/cora/releases?q=cora-windows-)
+[![Cora release](https://img.shields.io/github/v/release/keton-id/cora?label=Cora&color=0db7ed)](https://github.com/keton-id/cora/releases/latest)
 
-**Pre-release latest**
-
-[![macOS](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/prerelease-macos.json)](https://github.com/keton-id/cora/releases?q=cora-macos-)
-[![Linux](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/prerelease-linux.json)](https://github.com/keton-id/cora/releases?q=cora-linux-)
-[![Windows](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/keton-id/cora/main/.github/badges/prerelease-windows.json)](https://github.com/keton-id/cora/releases?q=cora-windows-)
-
-<!--
-Per-OS version badges auto-update from repo-managed JSON files. The release
-workflow regenerates both `stable` and `pre-release` lanes from the GitHub
-Releases API after each publish, so badges follow the real latest release
-per OS instead of whichever tag happened to trigger the workflow.
--->
 
 
 > *"He never let anyone hear his true voice."*
@@ -99,19 +85,16 @@ curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh \
 irm https://raw.githubusercontent.com/keton-id/cora/main/install.ps1 | iex
 ```
 
-Fetches the latest stable `cora-windows-v*` release for your arch
-(AMD64 / ARM64), verifies the SHA256 checksum, installs to
+Fetches the latest stable `v*` release for your architecture, verifies
+the SHA256 checksum, installs to
 `%LOCALAPPDATA%\Programs\cora\cr.exe`, and appends that directory to
 your user `PATH`. Open a new shell to pick up the `PATH` change.
 
 Flags (pass via a scriptblock so PowerShell can forward args through `iex`):
 
 ```powershell
-# Pin a specific version
+# Pin a specific stable version
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/keton-id/cora/main/install.ps1))) -Version 1.0.0
-
-# Track a prerelease channel
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/keton-id/cora/main/install.ps1))) -Channel alpha
 
 # Custom install dir, skip PATH mutation
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/keton-id/cora/main/install.ps1))) -BinDir C:\tools\cora -NoPath
@@ -130,8 +113,8 @@ brew install cora
 The package name is `cora`; the installed binary is `cr`. `brew upgrade cora`
 picks up new stable releases. The
 [`keton-id/homebrew-tap`](https://github.com/keton-id/homebrew-tap) repo
-is updated automatically by Cora's release pipeline on every stable
-tag. Pre-release alpha tags are **not** pushed to the tap.
+is updated automatically by Cora's release pipeline on each unified
+stable release.
 
 </details>
 
@@ -168,15 +151,8 @@ The meta `@keton-id/cora` package is a tiny ESM launcher with six
 uses each subpackage's `os`/`cpu` fields at install time to silently
 skip the five that don't match your host, so only the matching prebuilt
 `cr` binary lands on disk. No postinstall download, no native node
-addon, no `vendor/` bundle. Only stable releases publish to npm;
-alphas stay on GitHub Releases.
-
-`@keton-id/cora`'s version tracks the upstream release semver. Each
-subpackage is versioned by its own mirror tag and pinned in the meta's
-`optionalDependencies` to its actual current version on the registry
-(queried live at publish time), so an out-of-step per-OS release
-(e.g. a Windows-only fix that does not retag macOS) ships cleanly —
-the meta still re-publishes and points each OS at the right subpackage
+addon, no `vendor/` bundle. Only stable releases publish to npm. The
+meta package and every platform subpackage share the same release
 version.
 
 </details>
@@ -188,16 +164,14 @@ Grab the archive for your platform from the
 [Releases page](https://github.com/keton-id/cora/releases) and verify
 the checksum yourself.
 
-Each OS has its own tag prefix — pick the one for your host:
-`cora-macos-v<X.Y.Z>`, `cora-linux-v<X.Y.Z>`, or `cora-windows-v<X.Y.Z>`.
+Every platform archive belongs to the same `v<X.Y.Z>` tag.
 
 POSIX (tarball):
 
 ```bash
-OS=macos                    # or linux
 VERSION=1.0.0
+TAG="v${VERSION}"
 TARGET=aarch64-macos        # or x86_64-macos / x86_64-linux / aarch64-linux
-TAG="cora-${OS}-v${VERSION}"
 curl -fsSLO "https://github.com/keton-id/cora/releases/download/${TAG}/cr-${VERSION}-${TARGET}.tar.gz"
 curl -fsSLO "https://github.com/keton-id/cora/releases/download/${TAG}/cr-${VERSION}-${TARGET}.tar.gz.sha256"
 shasum -a 256 -c <(echo "$(cat cr-${VERSION}-${TARGET}.tar.gz.sha256)  cr-${VERSION}-${TARGET}.tar.gz")
@@ -210,7 +184,7 @@ Windows (zip):
 ```powershell
 $VERSION = "1.0.0"
 $TARGET  = "x86_64-windows"   # or aarch64-windows
-$TAG     = "cora-windows-v$VERSION"
+$TAG     = "v$VERSION"
 Invoke-WebRequest "https://github.com/keton-id/cora/releases/download/$TAG/cr-$VERSION-$TARGET.zip" -OutFile cr.zip
 Expand-Archive cr.zip -DestinationPath $Env:LOCALAPPDATA\cora\bin
 $Env:PATH += ";$Env:LOCALAPPDATA\cora\bin"

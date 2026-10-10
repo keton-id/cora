@@ -3,21 +3,11 @@ name: release
 on:
   push:
     tags:
-      - 'cora-macos-v*'
-      - 'cora-linux-v*'
-      - 'cora-windows-v*'
+      - 'v*'
   workflow_dispatch:
     inputs:
-      release_channel:
-        description: 'Channel'
-        type: choice
-        options:
-          - prerelease
-          - release
-        required: true
-        default: prerelease
-      source_tag:
-        description: 'Source tag (e.g. cora-macos-v0.3.0-alpha.1). For release channel the suffix is stripped to derive the stable tag.'
+      tag:
+        description: Existing release tag to rebuild (e.g. v0.11.0)
         required: true
         type: string
 
@@ -30,137 +20,68 @@ concurrency:
 
 jobs:
   resolve:
-    name: resolve target tag
+    name: resolve release version
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.value }}
-      os: ${{ steps.tag.outputs.os }}
       version: ${{ steps.tag.outputs.version }}
-      channel: ${{ steps.tag.outputs.channel }}
-      prerelease: ${{ steps.tag.outputs.prerelease }}
       matrix: ${{ steps.tag.outputs.matrix }}
-      npm_matrix: ${{ steps.tag.outputs.npm_matrix }}
     steps:
-      - name: Resolve tag, OS, channel
+      - name: Resolve and validate release tag
         id: tag
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
-          INPUT_CHANNEL: ${{ inputs.release_channel }}
-          INPUT_SOURCE: ${{ inputs.source_tag }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+          TAG="$REF_NAME"
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            CHANNEL="$INPUT_CHANNEL"
-            SOURCE="$INPUT_SOURCE"
-          else
-            CHANNEL=""
-            SOURCE="$REF_NAME"
+            TAG="$INPUT_TAG"
           fi
-
-          # Parse OS from the tag prefix: `cora-{os}-v...`.
-          case "$SOURCE" in
-            cora-macos-v*)   OS="macos" ;;
-            cora-linux-v*)   OS="linux" ;;
-            cora-windows-v*) OS="windows" ;;
-            *)
-              echo "error: unrecognised tag prefix in '$SOURCE' (expected cora-{macos|linux|windows}-v...)" >&2
-              exit 1
-              ;;
-          esac
-
-          PREFIX="cora-${OS}-v"
-          SOURCE_VERSION="${SOURCE#${PREFIX}}"
-
-          if [ "$CHANNEL" = "release" ]; then
-            # Strip first dash-suffix: 0.3.0-alpha.1 -> 0.3.0
-            VERSION="${SOURCE_VERSION%%-*}"
-            TAG="${PREFIX}${VERSION}"
-          else
-            VERSION="$SOURCE_VERSION"
-            TAG="$SOURCE"
-          fi
-
-          # Prerelease iff stripped version (just the semver part) contains
-          # a dash — i.e. has a pre-release suffix like `-alpha.1`.
-          if [[ "$VERSION" == *-* ]]; then
-            PRERELEASE="true"
-          else
-            PRERELEASE="false"
-          fi
-
-          # Build matrix filtered to this OS only. Two flavors:
-          #
-          # - `matrix` (build job): one entry per Zig target. Build only
-          #   needs to compile once per triple, regardless of how many
-          #   npm registries we ship to afterward.
-          # - `npm_matrix` (publish-npm-subpackage): cross-product of
-          #   target × registry, so each (triple, registry) pair runs
-          #   its own publish job. GitHub Actions can't layer a static
-          #   `matrix.registry` dim on top of a dynamic include-only
-          #   matrix, so we materialise the product here.
-          case "$OS" in
-            macos)
-              MATRIX='{"include":[{"target":"aarch64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"arm64"},{"target":"x86_64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"x64"}]}'
-              NPM_MATRIX='{"include":[{"target":"aarch64-macos","npm_platform":"darwin","npm_arch":"arm64","registry":"npmjs","registry_url":"https://registry.npmjs.org","token_secret":"NPM_TOKEN"},{"target":"aarch64-macos","npm_platform":"darwin","npm_arch":"arm64","registry":"github","registry_url":"https://npm.pkg.github.com","token_secret":"GITHUB_TOKEN"},{"target":"x86_64-macos","npm_platform":"darwin","npm_arch":"x64","registry":"npmjs","registry_url":"https://registry.npmjs.org","token_secret":"NPM_TOKEN"},{"target":"x86_64-macos","npm_platform":"darwin","npm_arch":"x64","registry":"github","registry_url":"https://npm.pkg.github.com","token_secret":"GITHUB_TOKEN"}]}'
-              ;;
-            linux)
-              MATRIX='{"include":[{"target":"x86_64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"x64"},{"target":"aarch64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"arm64"}]}'
-              NPM_MATRIX='{"include":[{"target":"x86_64-linux","npm_platform":"linux","npm_arch":"x64","registry":"npmjs","registry_url":"https://registry.npmjs.org","token_secret":"NPM_TOKEN"},{"target":"x86_64-linux","npm_platform":"linux","npm_arch":"x64","registry":"github","registry_url":"https://npm.pkg.github.com","token_secret":"GITHUB_TOKEN"},{"target":"aarch64-linux","npm_platform":"linux","npm_arch":"arm64","registry":"npmjs","registry_url":"https://registry.npmjs.org","token_secret":"NPM_TOKEN"},{"target":"aarch64-linux","npm_platform":"linux","npm_arch":"arm64","registry":"github","registry_url":"https://npm.pkg.github.com","token_secret":"GITHUB_TOKEN"}]}'
-              ;;
-            windows)
-              MATRIX='{"include":[{"target":"x86_64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"x64"},{"target":"aarch64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"arm64"}]}'
-              NPM_MATRIX='{"include":[{"target":"x86_64-windows-gnu","npm_platform":"win32","npm_arch":"x64","registry":"npmjs","registry_url":"https://registry.npmjs.org","token_secret":"NPM_TOKEN"},{"target":"x86_64-windows-gnu","npm_platform":"win32","npm_arch":"x64","registry":"github","registry_url":"https://npm.pkg.github.com","token_secret":"GITHUB_TOKEN"},{"target":"aarch64-windows-gnu","npm_platform":"win32","npm_arch":"arm64","registry":"npmjs","registry_url":"https://registry.npmjs.org","token_secret":"NPM_TOKEN"},{"target":"aarch64-windows-gnu","npm_platform":"win32","npm_arch":"arm64","registry":"github","registry_url":"https://npm.pkg.github.com","token_secret":"GITHUB_TOKEN"}]}'
-              ;;
-          esac
-
-          echo "value=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "os=${OS}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "channel=${CHANNEL}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
-          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
-          echo "npm_matrix=${NPM_MATRIX}" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag=${TAG} os=${OS} version=${VERSION} channel=${CHANNEL:-tag-push} prerelease=${PRERELEASE}"
-
-      - name: Create stable tag at source commit
-        if: ${{ inputs.release_channel == 'release' && steps.tag.outputs.value != inputs.source_tag }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SOURCE: ${{ inputs.source_tag }}
-          STABLE: ${{ steps.tag.outputs.value }}
-        run: |
-          set -euo pipefail
-
-          # The /git/refs/tags/<name> endpoint does PREFIX matching: querying
-          # `cora-macos-v0.5.0` while `cora-macos-v0.5.0-alpha.1` exists returns
-          # an array and confuses both the SHA lookup (jq) and the existence
-          # check. Use matching-refs which always returns an array, then
-          # filter by exact ref name.
-          SHA=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$SOURCE" \
-            --jq ".[] | select(.ref==\"refs/tags/$SOURCE\") | .object.sha")
-          if [ -z "$SHA" ]; then
-            echo "Source tag $SOURCE not found" >&2
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: expected a stable vX.Y.Z tag, got '$TAG'" >&2
             exit 1
           fi
+          VERSION="${TAG#v}"
+          MATRIX='{"include":[{"target":"aarch64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"arm64"},{"target":"x86_64-macos","runner":"macos-latest","npm_platform":"darwin","npm_arch":"x64"},{"target":"x86_64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"x64"},{"target":"aarch64-linux","runner":"ubuntu-latest","npm_platform":"linux","npm_arch":"arm64"},{"target":"x86_64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"x64"},{"target":"aarch64-windows-gnu","runner":"ubuntu-latest","npm_platform":"win32","npm_arch":"arm64"}]}'
+          {
+            echo "value=$TAG"
+            echo "version=$VERSION"
+            echo "matrix=$MATRIX"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved stable Cora release $TAG for all six targets."
 
-          EXISTING=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$STABLE" \
-            --jq ".[] | select(.ref==\"refs/tags/$STABLE\") | .object.sha")
-          if [ -n "$EXISTING" ]; then
-            echo "Stable tag $STABLE already exists at $EXISTING; skipping create."
-          else
-            gh api "repos/$GITHUB_REPOSITORY/git/refs" \
-              -f ref="refs/tags/$STABLE" -f sha="$SHA"
-            echo "Created tag $STABLE -> $SHA"
-          fi
+  verify-installers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+      - run: sh -n install.sh
+      - run: sh tests/install_test.sh
+      - name: Parse PowerShell installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path install.ps1),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
 
   build:
-    name: build ${{ matrix.target }}
-    needs: resolve
+    needs: [resolve, verify-installers]
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
+    name: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -168,14 +89,8 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-
       - name: Build
-        # Pass the tag's version through to the binary so `cr version`
-        # reports the actual release, not whatever build.zig.zon happens
-        # to hold at the checked-out commit (which can drift from the
-        # mirror tag's release version for retags).
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }} -Dversion=${{ needs.resolve.outputs.version }}
-
       - name: Package
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -183,10 +98,7 @@ jobs:
           set -euo pipefail
           TARGET="${{ matrix.target }}"
           case "${TARGET}" in
-            *-windows*)
-              # Windows ships as .zip (no tarball convention on Windows).
-              # `${TARGET%-gnu}` strips the toolchain suffix so artifact
-              # filenames stay symmetric with the POSIX triples.
+            *-windows-*)
               TRIPLE="${TARGET%-gnu}"
               ARTIFACT="cr-${VERSION}-${TRIPLE}.zip"
               (cd zig-out/bin && zip -q "${GITHUB_WORKSPACE}/${ARTIFACT}" cr.exe)
@@ -198,7 +110,6 @@ jobs:
           esac
           shasum -a 256 "${ARTIFACT}" | awk '{print $1}' > "${ARTIFACT}.sha256"
           echo "ARTIFACT=${ARTIFACT}" >> "$GITHUB_ENV"
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -210,15 +121,11 @@ jobs:
           retention-days: 7
 
   publish:
-    name: publish release
+    name: publish Cora v${{ needs.resolve.outputs.version }}
     needs: [resolve, build]
     runs-on: ubuntu-latest
-    environment: ${{ needs.resolve.outputs.prerelease == 'true' && 'pre-release' || 'release' }}
-    outputs:
-      tag: ${{ needs.resolve.outputs.tag }}
-      os: ${{ needs.resolve.outputs.os }}
-      version: ${{ needs.resolve.outputs.version }}
-      prerelease: ${{ needs.resolve.outputs.prerelease }}
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -227,123 +134,31 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-
       - name: Compute combined SHA256SUMS
         working-directory: dist
         run: |
           set -euo pipefail
           shopt -s nullglob
-          shasum -a 256 *.tar.gz *.zip > SHA256SUMS
-
-      - name: Verify or create release shell
+          shasum -a 256 -- *.tar.gz *.zip > SHA256SUMS
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.resolve.outputs.tag }}
-          OS: ${{ needs.resolve.outputs.os }}
           VERSION: ${{ needs.resolve.outputs.version }}
-          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         run: |
           set -euo pipefail
-          TITLE="Cora ${OS} v${VERSION}"
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            # Stable tag derived from a prerelease tag won't have a release-please draft.
-            # Create a fresh draft so the upload step has something to clobber into.
-            FLAGS=(--draft --title "$TITLE")
-            if [ "$PRERELEASE" = "true" ]; then
-              FLAGS+=(--prerelease)
-            fi
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" "${FLAGS[@]}"
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft --title "Cora v${VERSION}"
           fi
-
-      - name: Upload assets and publish release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.resolve.outputs.tag }}
-          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
-        run: |
-          set -euo pipefail
           shopt -s nullglob
-          assets=( dist/*.tar.gz dist/*.tar.gz.sha256 dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS )
-          gh release upload "$TAG" \
-            "${assets[@]}" \
-            --clobber \
-            --repo "$GITHUB_REPOSITORY"
-
-          if [ "$PRERELEASE" = "true" ]; then
-            gh release edit "$TAG" --draft=false --prerelease --repo "$GITHUB_REPOSITORY"
-          else
-            gh release edit "$TAG" --draft=false --prerelease=false --repo "$GITHUB_REPOSITORY"
-          fi
-
-  update-release-badges:
-    name: update README release badges
-    needs: [resolve, publish]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Refresh stable and prerelease badge JSON
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          mkdir -p .github/badges
-          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > releases.json
-          python3 <<'PY'
-          import json
-          from pathlib import Path
-
-          releases = json.loads(Path("releases.json").read_text())
-          badges_dir = Path(".github/badges")
-          colors = {"macos": "0db7ed", "linux": "fcc624", "windows": "00a4ef"}
-          labels = {"macos": "macOS", "linux": "Linux", "windows": "Windows"}
-
-          def latest_tag(os_name: str, prerelease: bool):
-              prefix = f"cora-{os_name}-v"
-              for rel in releases:
-                  if rel.get("draft"):
-                      continue
-                  if rel.get("prerelease") != prerelease:
-                      continue
-                  tag = rel.get("tag_name", "")
-                  if tag.startswith(prefix):
-                      return tag[len(f"cora-{os_name}-") :]
-              return None
-
-          for os_name in ("macos", "linux", "windows"):
-              for channel, is_prerelease in (("stable", False), ("prerelease", True)):
-                  message = latest_tag(os_name, is_prerelease) or "not yet"
-                  color = colors[os_name] if message != "not yet" else "9f9f9f"
-                  payload = {
-                      "schemaVersion": 1,
-                      "label": labels[os_name],
-                      "message": message,
-                      "color": color,
-                  }
-                  (badges_dir / f"{channel}-{os_name}.json").write_text(
-                      json.dumps(payload, indent=2) + "\n"
-                  )
-          PY
-
-      - name: Commit updated badges
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- .github/badges; then
-            echo "Badges unchanged; skipping commit."
-            exit 0
-          fi
-          git config user.email "actions@github.com"
-          git config user.name "github-actions[bot]"
-          git add .github/badges
-          git commit -m "docs: refresh release badges"
-          git push
+          assets=(dist/*.tar.gz dist/*.tar.gz.sha256 dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS)
+          gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          gh release edit "$TAG" --title "Cora v${VERSION}" --draft=false --prerelease=false --repo "$GITHUB_REPOSITORY"
 
   publish-homebrew:
     name: publish homebrew formula
     needs: [resolve, publish]
-    if: ${{ needs.resolve.outputs.os == 'macos' && needs.resolve.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -353,7 +168,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-
       - name: Render formula
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -361,9 +175,6 @@ jobs:
           set -euo pipefail
           chmod +x cora/scripts/render-homebrew.sh
           cora/scripts/render-homebrew.sh "$VERSION" dist > cora.rb
-          echo "Rendered Formula/cora.rb:"
-          cat cora.rb
-
       - name: Push to keton-id/homebrew-tap
         env:
           GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
@@ -387,7 +198,6 @@ jobs:
   publish-scoop:
     name: publish scoop manifest
     needs: [resolve, publish]
-    if: ${{ needs.resolve.outputs.os == 'windows' && needs.resolve.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -397,7 +207,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-
       - name: Render manifest
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -405,10 +214,7 @@ jobs:
           set -euo pipefail
           chmod +x cora/scripts/render-scoop.sh
           cora/scripts/render-scoop.sh "$VERSION" dist > cora.json
-          echo "Rendered bucket/cora.json:"
-          cat cora.json
-          python3 -c "import json,sys; json.load(open('cora.json'))"
-
+          python3 -c "import json; json.load(open('cora.json'))"
       - name: Push to keton-id/scoop-bucket
         env:
           GH_TOKEN: ${{ secrets.TAP_PUSH_TOKEN }}
@@ -429,34 +235,17 @@ jobs:
           git commit -m "cora ${VERSION}"
           git push
 
-  publish-linux:
-    name: publish linux (stub)
-    needs: [resolve, publish]
-    if: ${{ needs.resolve.outputs.os == 'linux' && needs.resolve.outputs.prerelease == 'false' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Note
-        run: |
-          # TODO(linux-dist): wire AUR and/or snapcraft publish steps here
-          # once an account + signing key are provisioned. Until then,
-          # Linux users consume the GitHub release tarballs directly.
-          echo "Linux stable release ${{ needs.resolve.outputs.version }}: no package-manager publish step configured yet."
-
   publish-npm-subpackage:
-    name: publish npm subpackage ${{ matrix.target }} → ${{ matrix.registry }}
+    name: publish npm subpackage ${{ matrix.target }}
     needs: [resolve, publish]
-    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
-    # `packages: write` is the permission GitHub Packages checks against
-    # the workflow's GITHUB_TOKEN; npmjs publishes use NPM_TOKEN and
-    # don't care about it, but the cross-product matrix means both
-    # registries share the job spec.
+    environment: Release
     permissions:
       contents: read
-      packages: write
+      id-token: write
     strategy:
       fail-fast: false
-      matrix: ${{ fromJson(needs.resolve.outputs.npm_matrix) }}
+      matrix: ${{ fromJson(needs.resolve.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -468,17 +257,10 @@ jobs:
           path: dist
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          # `registry-url` only wires `_authToken` for the registry's
-          # host into ~/.npmrc — it does NOT switch the default publish
-          # target. We pass `--registry` explicitly on every npm call,
-          # so an auth row keyed to the right host is still required.
-          registry-url: ${{ matrix.registry_url }}
-          # GitHub Packages requires the scope to match the host's
-          # auth namespace; npmjs ignores `scope` for public packages
-          # but the duplication is harmless.
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
           scope: '@keton-id'
-
+      - run: npm install --global npm@latest
       - name: Prepare subpackage tree
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
@@ -494,64 +276,31 @@ jobs:
             --target "$TARGET" \
             --dist dist \
             --out subpackage
-
-      - name: Publish subpackage (idempotent)
+      - name: Publish subpackage with npm Trusted Publishing
         working-directory: subpackage
         env:
-          # `secrets[<name>]` indirection lets the matrix pick the right
-          # token per registry without duplicating the publish step.
-          NODE_AUTH_TOKEN: ${{ secrets[matrix.token_secret] }}
-          REGISTRY_URL: ${{ matrix.registry_url }}
           VERSION: ${{ needs.resolve.outputs.version }}
           NPM_PLATFORM: ${{ matrix.npm_platform }}
           NPM_ARCH: ${{ matrix.npm_arch }}
         run: |
           set -euo pipefail
           PKG="@keton-id/cora-${NPM_PLATFORM}-${NPM_ARCH}"
-
-          # Idempotent retry: if the exact <pkg>@<version> already exists
-          # on this registry, skip publish (a previous workflow run for
-          # the same tag already won). npm view exits non-zero on 404,
-          # which is the "go publish" signal — anything else (network,
-          # 5xx) we want to surface, so we capture stderr separately.
-          if npm view "${PKG}@${VERSION}" version --registry="${REGISTRY_URL}" > /dev/null 2>view.err; then
-            echo "${PKG}@${VERSION} already on ${REGISTRY_URL} — skipping publish"
+          if npm view "${PKG}@${VERSION}" version --prefer-online 2>/dev/null; then
+            echo "${PKG}@${VERSION} already exists; skipping publish"
             exit 0
           fi
-          if ! grep -qE 'E404|404 Not Found|not in this registry|is not in this registry' view.err; then
-            echo "npm view failed with a non-404 error — refusing to publish blind" >&2
-            cat view.err >&2
-            exit 1
-          fi
-
-          npm publish --access public --registry="${REGISTRY_URL}"
+          npm publish --access public
 
   publish-npm-meta:
-    name: publish npm meta → ${{ matrix.registry }}
+    name: publish npm meta package
     needs: [resolve, publish, publish-npm-subpackage]
-    if: ${{ needs.resolve.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
+    environment: Release
     permissions:
       contents: read
-      packages: write
-    strategy:
-      # Keep registries independent: a transient failure on GitHub
-      # Packages shouldn't block the npmjs publish (or vice versa).
-      fail-fast: false
-      matrix:
-        include:
-          - registry: npmjs
-            registry_url: https://registry.npmjs.org
-            token_secret: NPM_TOKEN
-          - registry: github
-            registry_url: https://npm.pkg.github.com
-            token_secret: GITHUB_TOKEN
-    # Queue meta publishes per registry so two concurrent OS releases
-    # can't race a non-monotonic version onto the same registry. Keep
-    # the groups distinct so a slow npmjs publish doesn't gate the GH
-    # Packages job — each registry has its own bump-on-conflict loop.
+      id-token: write
     concurrency:
-      group: npm-meta-${{ matrix.registry }}
+      group: npm-meta-npmjs
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -560,28 +309,16 @@ jobs:
           ref: ${{ needs.resolve.outputs.tag }}
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: ${{ matrix.registry_url }}
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
           scope: '@keton-id'
-
-      - name: Prepare + publish meta
+      - run: npm install --global npm@latest
+      - name: Prepare and publish meta package with npm Trusted Publishing
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
-          NODE_AUTH_TOKEN: ${{ secrets[matrix.token_secret] }}
-          REGISTRY_URL: ${{ matrix.registry_url }}
+          REGISTRY_URL: https://registry.npmjs.org
         run: |
           set -euo pipefail
-          # prepare-meta.mjs queries the target registry for each
-          # subpackage's current dist-tag `latest`, renders the meta
-          # tree with version = release semver, and publishes — with a
-          # bump-on-conflict loop that absorbs the multi-OS race
-          # (three mirror tags at the same version → three parallel
-          # meta publishes at the same name@version). The first wins,
-          # the others either no-op (identical pins → idempotent
-          # success) or bump the patch and republish (different pins).
-          # The --registry flag scopes every `npm view` and `npm
-          # publish` inside the script to one registry, so the npmjs
-          # and GitHub Packages runs each settle on their own version.
           node cora/packaging/npm/scripts/prepare-meta.mjs \
             --version "$VERSION" \
             --src cora/packaging/npm/meta \

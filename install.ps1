@@ -3,21 +3,13 @@
     Install script for cora (`cr`) on Windows.
 
 .DESCRIPTION
-    Mirrors install.sh: downloads the latest matching cora-windows release
-    asset from GitHub, verifies its SHA256, extracts cr.exe, and installs to
-    a user-writable directory. Optionally adds the install directory to the
-    user PATH.
-
-    Each OS has its own release stream (cora-macos-v*, cora-linux-v*,
-    cora-windows-v*). This script only queries the cora-windows-v* stream.
-
-.PARAMETER Channel
-    Release channel: stable | alpha | beta | rc. Default: stable.
+    Mirrors install.sh: downloads the latest stable vX.Y.Z release asset
+    from GitHub, verifies its SHA256, extracts cr.exe, and installs to
+    a user-writable directory. Optionally adds the install directory to
+    the user PATH.
 
 .PARAMETER Version
-    Pin a specific version. Accepts a bare semver (e.g. 0.9.5), which is
-    auto-prefixed with cora-windows-v, or a fully-qualified tag
-    (e.g. cora-windows-v0.9.5-alpha.2).
+    Pin a specific stable version, with or without the v prefix.
 
 .PARAMETER BinDir
     Install directory. Default: $env:LOCALAPPDATA\Programs\cora.
@@ -34,14 +26,9 @@
 .EXAMPLE
     irm https://raw.githubusercontent.com/keton-id/cora/main/install.ps1 | iex
 
-.EXAMPLE
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/keton-id/cora/main/install.ps1))) -Channel alpha
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('stable', 'alpha', 'beta', 'rc')]
-    [string]$Channel = 'stable',
-
     [string]$Version = '',
 
     [string]$BinDir = '',
@@ -72,18 +59,15 @@ function Show-Usage {
     # so Get-Help is unreliable. Print a static usage block instead.
     Write-Host @'
 Usage:
-  install.ps1 [-Channel <stable|alpha|beta|rc>]
-              [-Version <X.Y.Z[-suffix]|tag>]
+  install.ps1 [-Version <X.Y.Z|vX.Y.Z>]
               [-BinDir <path>]
               [-NoVerify] [-NoPath] [-Help]
 
 Defaults:
-  -Channel stable
   -BinDir  %LOCALAPPDATA%\Programs\cora
 
 Examples:
   install.ps1
-  install.ps1 -Channel alpha
   install.ps1 -Version 1.0.0
   install.ps1 -BinDir C:\tools\cora -NoPath
 '@
@@ -101,73 +85,24 @@ function Get-Arch {
 }
 
 function Resolve-Tag {
-    param(
-        [string]$Channel,
-        [string]$PinVersion
-    )
-
-    $prefix = 'cora-windows-v'
+    param([string]$PinVersion)
 
     if ($PinVersion) {
-        if ($PinVersion -like 'cora-*-v*') {
-            return $PinVersion
-        }
-        if ($PinVersion -like 'v*') {
-            return "$prefix$($PinVersion.Substring(1))"
-        }
-        return "$prefix$PinVersion"
+        if ($PinVersion -match '^v') { return $PinVersion }
+        return "v$PinVersion"
     }
 
-    $api = "https://api.github.com/repos/$script:Repo/releases?per_page=100"
+    $api = "https://api.github.com/repos/$script:Repo/releases/latest"
     $headers = @{ 'User-Agent' = 'cora-install-ps1' }
-    $releases = Invoke-RestMethod -Uri $api -Headers $headers -UseBasicParsing
-
-    $tags = $releases | ForEach-Object { $_.tag_name }
-
-    $stableRe = "^$([regex]::Escape($prefix))\d+\.\d+\.\d+$"
-    $preRe = "^$([regex]::Escape($prefix))\d+\.\d+\.\d+-$Channel\."
-
-    switch ($Channel) {
-        'stable' {
-            $match = $tags | Where-Object { $_ -match $stableRe } | Select-Object -First 1
-        }
-        default {
-            $match = $tags | Where-Object { $_ -match $preRe } | Select-Object -First 1
-        }
-    }
-
-    if ($match) { return $match }
-
-    # Legacy fallback: bare v* releases pre-OS-split. The artifact filename
-    # is OS-agnostic so the download path further down works either way.
-    $legacyStableRe = '^v\d+\.\d+\.\d+$'
-    $legacyPreRe = "^v\d+\.\d+\.\d+-$Channel\."
-
-    switch ($Channel) {
-        'stable' {
-            $match = $tags | Where-Object { $_ -match $legacyStableRe } | Select-Object -First 1
-        }
-        default {
-            $match = $tags | Where-Object { $_ -match $legacyPreRe } | Select-Object -First 1
-        }
-    }
-
-    if ($match) {
-        Write-Warning "no $prefix* release found — falling back to legacy $match"
-        return $match
-    }
-
-    return $null
+    $release = Invoke-RestMethod -Uri $api -Headers $headers -UseBasicParsing
+    return $release.tag_name
 }
 
 function Get-VersionFromTag {
     param([string]$Tag)
 
-    # Match install.sh's SHORTEST-prefix strip: a prerelease suffix containing
-    # "-v" later (e.g. cora-windows-v1.0.0-vendor.1) must survive.
-    if ($Tag -match '^cora-[^-]+-v(.+)$') { return $Matches[1] }
-    if ($Tag -match '^v(.+)$') { return $Matches[1] }
-    throw "unrecognised tag shape: $Tag"
+    if ($Tag -match '^v(\d+\.\d+\.\d+)$') { return $Matches[1] }
+    throw "unrecognised stable release tag: $Tag"
 }
 
 function Add-ToUserPath {
@@ -191,9 +126,9 @@ function Add-ToUserPath {
 function Invoke-Install {
     $arch = Get-Arch
     $target = "$arch-windows"
-    $tag = Resolve-Tag -Channel $Channel -PinVersion $Version
-    if (-not $tag) {
-        throw "could not resolve a release for os='windows' channel='$Channel'"
+    $tag = Resolve-Tag -PinVersion $Version
+    if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+        throw "could not resolve a stable vX.Y.Z release"
     }
     $ver = Get-VersionFromTag -Tag $tag
     $artifact = "cr-$ver-$target.zip"
@@ -240,11 +175,7 @@ function Invoke-Install {
 
         $verOut = & $dest version 2>&1
         Write-Host "installed $verOut"
-        Write-Host "binary at: $dest"
-
-        if ($NoPath) {
-            Write-Host "note: -NoPath set, skipping PATH update"
-        } else {
+        if (-not $NoPath) {
             $added = Add-ToUserPath -Dir $script:BinDir
             if ($added) {
                 Write-Host "added $script:BinDir to user PATH (open a new shell to pick it up)"
