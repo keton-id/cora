@@ -18,12 +18,10 @@ and CLI surface may change between minor versions until `v1.0.0`. We follow
 release-please automation — see the
 [Commit conventions](#commit-conventions) section below.
 
-Cora is built and distributed per-OS — every release has its own
-`cora-{macos,linux,windows}-v…` mirror tag — but versioned in lockstep
-against a single upstream `v*` tag managed by release-please. A
-Windows-only fix only pushes the `cora-windows-v…` mirror, so macOS and
-Linux do not spend CI minutes rebuilding code they did not change.
-See [RELEASING.md](RELEASING.md) for the full model.
+Cora builds macOS, Linux, and Windows targets together under one stable
+`v<X.Y.Z>` release tag. release-please owns versioning; every release
+builds the full target matrix and publishes one GitHub Release.
+See [RELEASING.md](RELEASING.md) for the full flow.
 
 ---
 
@@ -123,7 +121,7 @@ fix(crypto): zero key on Argon2id failure path
 feat(proto)!: bump frame header to v2
 
 security: tighten LOCAL_PEERPID TOCTOU window
-docs(readme): document install.sh --channel flag
+docs(readme): document install.sh --version flag
 ```
 
 Scopes are optional but encouraged — they group entries in the changelog.
@@ -139,11 +137,10 @@ Scopes are optional but encouraged — they group entries in the changelog.
 4. Open a PR. CI runs `build + test + fmt` on Linux and macOS, plus a
    Conventional Commit lint on the PR title.
 5. Wait for review. We aim for first response within a few days.
-6. After merge: release-please updates a floating
-   "chore(main): release …" PR covering the OS components your commit
-   bumped (one to three of macOS / Linux / Windows). Maintainers merge
-   that when ready, which tags the per-OS release(s) and triggers the
-   matching OS-scoped builds. See [Releasing](#releasing-maintainers-only).
+6. After merge, release-please updates one release PR. Merging it creates
+   a `v<X.Y.Z>` tag and triggers the build and publish workflow for every
+   supported OS and architecture. See
+   [Releasing](#releasing-maintainers-only).
 
 ### Reviewer expectations
 
@@ -217,46 +214,21 @@ For integration tests that need a tmp directory, use
 
 ## Releasing (maintainers only)
 
-Cora is built and distributed per-OS — macOS, Linux, Windows — but
-versioned in lockstep against a single upstream `v*` tag. release-please
-owns the upstream version; a post-release "mirror-tag" step fans out
-`cora-{os}-v*` tags only for the OS(es) the diff touched, so a
-Windows-only fix does not spend CI minutes on macOS or Linux runners.
-The full operational guide lives in [RELEASING.md](RELEASING.md); the
-summary below is enough to understand how your commits land.
+Cora uses one stable `v<X.Y.Z>` tag for all supported OSes. See
+[`RELEASING.md`](RELEASING.md) for the operator steps.
 
 1. Conventional Commits land on `main`.
-2. `release-please` looks at the standard Conventional Commits prefixes
-   (`feat:`, `fix:`, `perf:`, `security:`) to bump the single
-   upstream version. It opens (or updates) one PR titled
-   `chore(main): release v…` that edits `build.zig.zon`,
-   `CHANGELOG.md`, and the manifest.
-3. A maintainer merges that PR. `release-please` creates the upstream
-   tag `v<X.Y.Z>`.
-4. The `mirror-tags` job (in `release-please.yml`) decides which
-   per-OS mirror tags (`cora-{macos,linux,windows}-v<X.Y.Z>`) to push.
-   For each OS it:
-   1. Honors a `Release-Os: <os>[,<os>...]` footer in the release-range
-      commits, if present (skips the diff classifier).
-   2. Otherwise diffs the new `v*` tag against **that OS's own** last
-      `cora-<os>-v*` tag (not the previous upstream `v*` — this lets an
-      OS that skipped a release catch up the next time something
-      relevant lands).
-   3. Runs the diff through
-      `grep -qE -f .github/release-paths/<os>.txt`; any match pushes
-      the mirror tag.
+2. release-please opens or updates one release PR with the version,
+   changelog, manifest, and `build.zig.zon`.
+3. Merging the release PR creates `v<X.Y.Z>` and triggers
+   `.github/workflows/release.yml`.
+4. The release workflow builds macOS, Linux, and Windows for x64 and
+   ARM64, publishes one GitHub Release titled `Cora v<X.Y.Z>`, updates
+   Homebrew and Scoop, and publishes the npm launcher and six platform
+   packages.
 
-   The path patterns are version-controlled regex files — see
-   [`.github/release-paths/README.md`](.github/release-paths/README.md).
-   Bookkeeping paths like `build.zig.zon`, `CHANGELOG.md`, and top-level
-   docs are excluded from every OS's regex so release-please's own
-   bookkeeping bump never spuriously fans out.
-5. `release.yml` fires per mirror tag and scopes its build matrix to
-   the OS embedded in the tag prefix.
-6. Distribution is per-OS: stable `cora-macos-v*` updates Homebrew;
-   stable `cora-windows-v*` updates Scoop; every stable mirror tag
-   publishes the matching npm subpackages and re-publishes the meta
-   `@keton-id/cora`.
+All releases are stable. The release workflow rejects prerelease and
+per-OS tag formats.
 
 ### Forcing a specific version (release-please)
 
@@ -268,51 +240,12 @@ chore: bump to 1.0.0
 Release-As: 1.0.0
 ```
 
-`Release-As:` is a single semver. It is not per-OS — with our model
-that's fine because the mirror-tag step still scopes downstream to
-affected OS(es).
-
-### Forcing or skipping a mirror tag
-
-The mirror-tag classifier reads regex files in
-[`.github/release-paths/{macos,linux,windows}.txt`](.github/release-paths/)
-and per-OS last-tag diff baselines. To override per release:
-
-- **Restrict to specific OS(es).** Add a `Release-Os:` footer to any
-  commit in the release range, e.g.:
-
-  ```
-  fix(crypto): tighten nonce derivation for Windows pipe handshake
-
-  Release-Os: windows
-  ```
-
-  Multiple OSes go comma-separated (`Release-Os: macos,linux`). The
-  fan-out step honors the union of footers across the range and skips
-  the diff classifier when any are present.
-
-- **Force all three** even if the diff is OS-scoped: re-run the
-  `release-please.yml` workflow's `mirror-tags` job, or push the
-  three mirror tags by hand.
-
-- **Adjust the classifier itself**: edit the regex files in
-  `.github/release-paths/`. Patterns are POSIX ERE, one per line.
-  See [`.github/release-paths/README.md`](.github/release-paths/README.md).
-
-### Promoting an alpha to stable
-
-Run the **release** workflow manually with `release_channel=release`
-and `source_tag=cora-<os>-v<X.Y.Z>-alpha.N`. The workflow strips the
-suffix, retags the same commit, and runs that OS's distribution jobs.
-
 ### Version source of truth
 
 The single field is `.version` in [`build.zig.zon`](./build.zig.zon),
 marked with `// x-release-please-version`. release-please updates it
 on each PR; `build.zig` reads it via `@embedFile` so `cr version`
 matches the tagged release. Do not edit it by hand.
-
----
 
 ## Reporting bugs
 

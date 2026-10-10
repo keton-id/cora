@@ -4,6 +4,7 @@ const Io = std.Io;
 const cora = @import("cora");
 const tui_menu = @import("tui/menu.zig");
 const usage = @import("cli/usage.zig");
+const update_cmd = @import("cli/update.zig");
 const spawn_windows = cora.spawn_windows;
 const build_options = @import("build_options");
 
@@ -29,6 +30,23 @@ pub fn main(init: std.process.Init) !void {
     }
     if (usage.isVersionFlag(sub) or std.mem.eql(u8, sub, "version")) {
         printVersion(io);
+        return;
+    }
+
+    if (std.mem.eql(u8, sub, "update")) {
+        if (argvHasHelpFlag(args[2..])) {
+            usage.printUpdate(io, .stdout);
+            return;
+        }
+        if (args.len > 2) {
+            std.debug.print("cr update does not accept arguments\n", .{});
+            usage.printUpdate(io, .stderr);
+            std.process.exit(1);
+        }
+        update_cmd.run(arena, io) catch |err| {
+            std.debug.print("cr update failed: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
         return;
     }
 
@@ -161,6 +179,7 @@ fn cmdHelp(io: Io, parts: []const []const u8) !void {
     if (std.mem.eql(u8, sub, "rekey")) return usage.printRekey(io, .stdout);
     if (std.mem.eql(u8, sub, "recovery")) return usage.printRecovery(io, .stdout);
     if (std.mem.eql(u8, sub, "version")) return printVersion(io);
+    if (std.mem.eql(u8, sub, "update")) return usage.printUpdate(io, .stdout);
     if (usage.isHelpFlag(sub)) return usage.printTop(io, .stdout);
 
     if (std.mem.eql(u8, sub, "audit")) {
@@ -1480,4 +1499,5 @@ test "main module imports cora" {
 // from any test in this file.
 test {
     _ = @import("cli/usage.zig");
+    _ = @import("cli/update.zig");
 }

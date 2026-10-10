@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Stable tag to enrich (e.g. cora-macos-v0.5.1)"
+        description: "Stable release tag to enrich (e.g. v0.11.1)"
         required: true
         type: string
 
@@ -25,45 +25,28 @@ jobs:
           fetch-depth: 0
           ref: main
 
-      - name: Resolve tag, OS, previous stable
+      - name: Resolve tag and previous stable
         id: resolve
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag || github.event.release.tag_name }}"
-          if [ -z "$TAG" ]; then
-            echo "error: no tag resolved" >&2
+          TAG="${INPUT_TAG:-$RELEASE_TAG}"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "error: expected a stable vX.Y.Z tag, got '$TAG'" >&2
             exit 1
           fi
-
-          case "$TAG" in
-            cora-macos-v*)   OS="macos" ;;
-            cora-linux-v*)   OS="linux" ;;
-            cora-windows-v*) OS="windows" ;;
-            *)
-              echo "error: tag '$TAG' does not match cora-{macos|linux|windows}-v..." >&2
-              exit 1
-              ;;
-          esac
-
-          # Previous stable for this OS only: tag must start with the same
-          # cora-{os}-v prefix, end in plain semver (no -suffix), and not
-          # be the current tag.
           PREV=$(git tag --sort=-v:refname \
-            | grep -E "^cora-${OS}-v[0-9]+\.[0-9]+\.[0-9]+$" \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | grep -v "^${TAG}$" \
             | head -1 || true)
-
-          # All three OS components share a single CHANGELOG.md. The
-          # previous-stable lookup above stays per-OS so generated notes
-          # diff against the right baseline, but the file we write back
-          # into is the unified history.
-          CHANGELOG_FILE="CHANGELOG.md"
-
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "os=$OS" >> "$GITHUB_OUTPUT"
-          echo "prev=$PREV" >> "$GITHUB_OUTPUT"
-          echo "changelog_file=$CHANGELOG_FILE" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag=$TAG os=$OS prev=$PREV file=$CHANGELOG_FILE"
+          {
+            echo "tag=$TAG"
+            echo "prev=$PREV"
+            echo "changelog_file=CHANGELOG.md"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$TAG prev=$PREV file=CHANGELOG.md"
 
       - name: Generate release notes via GitHub API
         env:
@@ -91,7 +74,7 @@ jobs:
             --field body=@/tmp/notes.md > /dev/null
           echo "Release body for ${TAG} updated."
 
-      - name: Rewrite stable section in per-OS CHANGELOG
+      - name: Rewrite stable CHANGELOG section
         run: |
           python3 .github/scripts/enrich_changelog.py \
             "${{ steps.resolve.outputs.tag }}" /tmp/notes.md \

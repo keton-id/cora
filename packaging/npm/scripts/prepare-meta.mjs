@@ -2,43 +2,25 @@
 // Render and publish the @keton-id/cora meta npm package.
 //
 // Inputs:
-//   --version <semver>   The release version (no `v` prefix). Becomes
-//                        the meta's initial candidate version. A
-//                        coordinated multi-OS stable release (e.g.
-//                        v1.0.0) fans out to up to three mirror tags
-//                        at the same version, which triggers three
-//                        parallel publish-npm-meta jobs against the
-//                        same `@keton-id/cora@<version>`. The
-//                        bump-on-conflict loop below resolves that
-//                        race: the first publisher wins, and the
-//                        others either no-op idempotently (identical
-//                        pins) or fall through to a bumped patch
-//                        (different pins).
+//   --version <semver>   Release version (no `v` prefix) for the meta
+//                        package. The publish is idempotent for an
+//                        existing version with the same platform pins.
 //   --src <dir>          Source dir containing the meta template tree
 //                        (packaging/npm/meta).
 //   --out <dir>          Output dir for the rendered tree (used as
 //                        cwd for `npm publish`).
-//   --registry <url>     Optional. Registry URL for both `npm view`
-//                        and `npm publish`. Defaults to the npm CLI's
-//                        configured registry (npmjs.org unless the
-//                        env/.npmrc says otherwise). Pass
-//                        https://npm.pkg.github.com to target GitHub
-//                        Packages. The bump-on-conflict loop, all
-//                        subpackage `dist-tags.latest` lookups, and
-//                        the `optionalDependencies` audit on a
-//                        conflicting meta version all use this
-//                        registry — never mix registries inside one
-//                        run.
+//   --registry <url>     Optional registry URL for all `npm view` and
+//                        `npm publish` calls. Release CI targets npmjs.org
+//                        using npm Trusted Publishing (OIDC).
 //
-// optionalDependencies pins are queried live from the npm registry
-// for each of the six `@keton-id/cora-<platform>-<arch>` packages.
-// Each query distinguishes a legitimate "never published" (E404)
-// from a transient failure (network blip, registry hiccup): the
-// former returns null and the platform is omitted, the latter
-// throws so the job fails loudly and can be retried — avoids
-// silently shipping a meta that drops a platform on `@latest`.
+// optionalDependencies pins are queried live from npmjs.org for each of
+// the six `@keton-id/cora-<platform>-<arch>` packages. Each query
+// distinguishes a legitimate "never published" (E404) from a transient
+// failure; transient errors fail the job instead of silently dropping a
+// platform from the launcher.
+//
 
-import { argv, env, exit, stderr, stdout } from "node:process";
+import { argv, exit, stderr, stdout } from "node:process";
 import { readFileSync, writeFileSync, mkdirSync, cpSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -70,15 +52,6 @@ if (!/^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$/.test(releaseVersion)) {
   fail(`--version must be plain semver (got: ${releaseVersion})`);
 }
 
-function bumpPatch(semver) {
-  const base = semver.split("-")[0].split("+")[0];
-  const parts = base.split(".").map((n) => parseInt(n, 10));
-  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) {
-    fail(`cannot bump non-semver: ${semver}`);
-  }
-  parts[2] += 1;
-  return parts.join(".");
-}
 
 // E404 (or "404 Not Found") is a definitive "package or version does
 // not exist" from the registry — return null so the caller treats it
@@ -167,10 +140,9 @@ function renderTree(version, pins) {
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
 }
 
-// `npm publish` exits non-zero with EPUBLISHCONFLICT (or the modern
-// 403/409 wording — npm has changed phrasing several times) when the
-// target version already exists. Detect it from stderr so the
-// bump-on-conflict loop can react; any other failure rethrows.
+// npm publish exits with a version conflict when this release is already
+// present. Treat identical pins as an idempotent rerun; never invent a
+// second package version that diverges from the Cora release tag.
 function attemptPublish() {
   const r = npmRun(["publish", "--access", "public", ...registryArgs], {
     cwd: outDir,
@@ -179,55 +151,26 @@ function attemptPublish() {
   stdout.write(r.stdout || "");
   stderr.write(r.stderr || "");
 
-  if (r.status === 0) return { ok: true };
+  if (r.status === 0) return;
 
   const text = (r.stderr || "") + (r.stdout || "");
   if (/EPUBLISHCONFLICT|cannot publish over|previously published versions|version not allowed/i.test(text)) {
-    return { ok: false, conflict: true };
+    const existing = npmViewOptionalDependencies(META, releaseVersion);
+    if (pinsEqual(existing, pins)) {
+      stderr.write(`${META}@${releaseVersion} already published with identical pins — idempotent exit\n`);
+      return;
+    }
+    fail(`${META}@${releaseVersion} already exists with different platform pins; refusing to publish a mismatched version`);
   }
-  throw new Error(`npm publish failed (no conflict signal):\n${text || r.error?.message}`);
+  throw new Error(`npm publish failed:\n${text || r.error?.message}`);
 }
 
 const META = "@keton-id/cora";
-const MAX_BUMPS = 10; // belt-and-suspenders cap on the conflict loop
-
-let candidate = releaseVersion;
-let bumps = 0;
-
-while (true) {
-  if (bumps > MAX_BUMPS) {
-    fail(`bump-on-conflict loop exceeded ${MAX_BUMPS} iterations — abort`);
-  }
-
-  stderr.write(`\n=== candidate ${META}@${candidate} ===\n`);
-  const pins = collectPins();
-  if (Object.keys(pins).length === 0) {
-    fail(`no subpackages published yet — refuse to publish meta with empty optionalDependencies`);
-  }
-
-  renderTree(candidate, pins);
-
-  const result = attemptPublish();
-  if (result.ok) {
-    stderr.write(`published ${META}@${candidate}\n`);
-    break;
-  }
-
-  // EPUBLISHCONFLICT path: compare pins on the existing version. If
-  // identical, this run is idempotent — another release.yml run for
-  // the same upstream version already published the same map.
-  // Otherwise bump patch and loop; the concurrency group serializes
-  // meta jobs so the final survivor sees every sibling subpackage
-  // already on the registry, and `latest` lands on the freshest pins.
-  stderr.write(`conflict on ${META}@${candidate} — comparing pins\n`);
-  const existing = npmViewOptionalDependencies(META, candidate);
-  if (pinsEqual(existing, pins)) {
-    stderr.write(`${META}@${candidate} already published with identical pins — idempotent exit\n`);
-    break;
-  }
-
-  const next = bumpPatch(candidate);
-  stderr.write(`existing pins differ — bumping ${candidate} -> ${next}\n`);
-  candidate = next;
-  bumps++;
+const pins = collectPins();
+if (Object.keys(pins).length === 0) {
+  fail(`no subpackages published yet — refuse to publish meta with empty optionalDependencies`);
 }
+
+stderr.write(`\n=== publishing ${META}@${releaseVersion} ===\n`);
+renderTree(releaseVersion, pins);
+attemptPublish();

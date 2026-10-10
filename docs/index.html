@@ -584,9 +584,9 @@
     </div>
     <div class="tabs reveal">
       <div class="os-seg" id="osSeg">
-        <button data-os="mac" class="active">macOS<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=cora-macos-*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
-        <button data-os="linux">Linux<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=cora-linux-*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
-        <button data-os="windows">Windows<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=cora-windows-*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
+        <button data-os="mac" class="active">macOS<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=v*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
+        <button data-os="linux">Linux<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=v*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
+        <button data-os="windows">Windows<img class="osbadge" alt="" src="https://img.shields.io/github/v/release/keton-id/cora?filter=v*&display_name=tag&label=&color=8b1a1a&style=flat-square" /></button>
       </div>
       <div class="tabbar" id="tabbar">
         <button class="active" data-tab="script" data-os="mac linux">Install script<span class="rec">recommended</span></button>
@@ -602,11 +602,8 @@
           <div class="code-tabbar"><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span><span class="label">macOS · Linux</span></div>
 <pre><span class="p">$</span> curl -fsSL https://raw.githubusercontent.com/keton-id/cora/main/install.sh | sh
 
-<span class="c"># pin a specific tag</span>
-<span class="p">$</span> curl -fsSL .../install.sh | sh -s -- <span class="arg">--version 1.0.0</span>
-
-<span class="c"># track a prerelease channel</span>
-<span class="p">$</span> curl -fsSL .../install.sh | sh -s -- <span class="arg">--channel alpha</span></pre>
+<span class="c"># pin a stable version</span>
+<span class="p">$</span> curl -fsSL .../install.sh | sh -s -- <span class="arg">--version 1.0.0</span></pre>
         </div>
         <p class="note">Fetches the latest stable release for your OS/arch, verifies the <code>SHA256</code> checksum, and installs to <code>/usr/local/bin</code> (or <code>~/.local/bin</code> without sudo).</p>
       </div>
@@ -619,10 +616,9 @@
 <span class="c"># pin a specific version</span>
 <span class="p">></span> &amp; ([scriptblock]::Create((irm .../install.ps1))) <span class="arg">-Version 1.0.0</span>
 
-<span class="c"># track a prerelease channel</span>
-<span class="p">></span> &amp; ([scriptblock]::Create((irm .../install.ps1))) <span class="arg">-Channel alpha</span></pre>
+</pre>
         </div>
-        <p class="note">Fetches the latest stable <code>cora-windows-v*</code> release for your arch (AMD64 / ARM64), verifies the <code>SHA256</code> checksum, and installs to <code>%LOCALAPPDATA%\Programs\cora\cr.exe</code>. Appends the install dir to your user <code>PATH</code> — open a new shell to pick it up.</p>
+        <p class="note">Fetches the latest stable <code>vX.Y.Z</code> release for your arch (AMD64 / ARM64), verifies the <code>SHA256</code> checksum, and installs to <code>%LOCALAPPDATA%\Programs\cora\cr.exe</code>. Appends the install dir to your user <code>PATH</code> — open a new shell to pick it up.</p>
       </div>
 
       <div class="tabpanel" data-panel="brew">
@@ -631,7 +627,7 @@
 <pre><span class="p">$</span> brew tap keton-id/tap
 <span class="p">$</span> brew install cora</pre>
         </div>
-        <p class="note">The tap is updated automatically by Cora's release pipeline on every stable tag. <code>brew upgrade cora</code> picks up new releases. Pre-release alphas are not pushed to the tap.</p>
+        <p class="note">The tap is updated automatically by Cora's release pipeline on every unified stable release. <code>brew upgrade cora</code> picks up new releases.</p>
       </div>
 
       <div class="tabpanel" data-panel="scoop">

@@ -63,12 +63,16 @@ cr help <subcommand> <action> # deep
 
 ## Versioning
 
-Every Cora release ships under one upstream `v*` tag and up to three per-OS mirror tags (`cora-macos-v*`, `cora-linux-v*`, `cora-windows-v*`) — only OSes whose code actually changed get a mirror, so e.g. a Windows-only fix bumps only the win32 subpackages.
+Every stable Cora release uses one `v<X.Y.Z>` tag and publishes all six
+platform subpackages at that version.
 
-The npm packages follow that shape:
+- `@keton-id/cora-<platform>-<arch>` contains that release's platform
+  binary.
+- `@keton-id/cora` tracks the same release semver and pins each
+  `optionalDependency` to the matching subpackage version.
 
-- `@keton-id/cora-<platform>-<arch>` (subpackages) — versioned to the mirror tag that produced them. A subpackage version reports the actual `cr` version on its host.
-- `@keton-id/cora` (this meta) — versioned at the upstream release semver (e.g. `0.9.2`). Every publish re-pins `optionalDependencies` to whatever each subpackage's current registry version is, queried live at publish time. `@latest` therefore always pulls the freshest binary for your host, and out-of-step per-OS releases ship cleanly because each subpackage pin reflects that OS's actual current version, not whatever the upstream release shipped.
+The full release process is documented in
+[`RELEASING.md`](https://github.com/keton-id/cora/blob/main/RELEASING.md).
 
 `cr version` reports the subpackage's version (the one actually running on your machine), not the meta version.
 
@@ -78,7 +82,6 @@ Pin a specific build with `@<version>` to keep an environment reproducible:
 npm i -g @keton-id/cora@1.0.0
 ```
 
-Pre-1.0 alphas remain on GitHub Releases only and are not published to npm.
 
 ## License
 
