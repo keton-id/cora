@@ -2,7 +2,7 @@
 
 > Zero-knowledge secret injection runtime for AI agents.
 
-`cr` is a single-binary CLI that holds your secrets encrypted at rest and injects them straight into a child process's environment — without the agent ever seeing the values. Encrypted-file based (Argon2id + XChaCha20-Poly1305), portable, no infra required.
+`cr` keeps secrets encrypted at rest and injects them into child-process environments without exposing values to the agent.
 
 ## Install
 
@@ -11,77 +11,54 @@ npm i -g @keton-id/cora
 cr --help
 ```
 
-Or one-shot via `npx`:
+Or use it once with `npx`:
 
 ```sh
 npx @keton-id/cora --help
 ```
 
-## What's in this package
+## One package, six native targets
 
-This is the **meta** package. It contains:
+`@keton-id/cora` is the only npm package. Its postinstall script downloads the binary matching the host and verifies the archive against the SHA256 sidecar published with the same GitHub release.
 
-- a small ESM launcher (`bin/cr.js`)
-- six `optionalDependencies` — one per `<platform>-<arch>` combination
-
-npm reads the `os` and `cpu` fields on each optional dep at install time and silently skips the five that don't match your host, so only the matching prebuilt native `cr` binary lands on disk:
-
-| platform | arch | subpackage |
+| OS | Architecture | Release asset |
 | --- | --- | --- |
-| macOS | x64 | `@keton-id/cora-darwin-x64` |
-| macOS | arm64 | `@keton-id/cora-darwin-arm64` |
-| Linux | x64 | `@keton-id/cora-linux-x64` |
-| Linux | arm64 | `@keton-id/cora-linux-arm64` |
-| Windows | x64 | `@keton-id/cora-win32-x64` |
-| Windows | arm64 | `@keton-id/cora-win32-arm64` |
+| macOS | x64 | `cr-X.Y.Z-x86_64-macos.tar.gz` |
+| macOS | arm64 | `cr-X.Y.Z-aarch64-macos.tar.gz` |
+| Linux | x64 | `cr-X.Y.Z-x86_64-linux.tar.gz` |
+| Linux | arm64 | `cr-X.Y.Z-aarch64-linux.tar.gz` |
+| Windows | x64 | `cr-X.Y.Z-x86_64-windows.zip` |
+| Windows | arm64 | `cr-X.Y.Z-aarch64-windows.zip` |
 
-There are no postinstall scripts, no install-time downloads, and no `node_modules` runtime dependencies beyond the resolved subpackage.
-
-Caller-identity verification is kernel-backed on every supported target — `SO_PEERCRED` on Linux, `LOCAL_PEERPID` on macOS, `GetNamedPipeClientProcessId` on Windows. See [SECURITY.md](https://github.com/keton-id/cora/blob/main/SECURITY.md) for the full trust model.
+Installation requires network access to the matching GitHub Release. Windows extraction uses PowerShell; macOS and Linux use `tar`. If npm scripts are disabled, run `npm rebuild @keton-id/cora` to install the native binary.
 
 ## Usage
 
-The full CLI surface is documented at <https://github.com/keton-id/cora>. Quick orientation:
-
 ```sh
-cr init                                       # create encrypted cora.zon
-cr secrets set GITHUB_TOKEN                   # add a secret (prompts)
-cr policy task add deploy GITHUB_TOKEN        # scope a task to that secret
-cr unlock                                     # start the background service
-cr exec deploy -- ./my-script.sh              # spawn with injected env
-cr lock                                       # zero memory, stop service
+cr init
+cr secrets set GITHUB_TOKEN
+cr policy task add deploy GITHUB_TOKEN
+cr unlock
+cr exec deploy -- ./my-script.sh
+cr lock
 ```
 
 Help is conventional:
 
 ```sh
-cr help                       # top-level
-cr --help                     # same
-cr <subcommand> --help        # per-subcommand
-cr help <subcommand> <action> # deep
+cr help
+cr --help
+cr <subcommand> --help
+cr help <subcommand> <action>
 ```
 
 ## Versioning
 
-Every stable Cora release uses one `v<X.Y.Z>` tag and publishes all six
-platform subpackages at that version.
+The npm package version matches the stable `v<X.Y.Z>` GitHub Release tag. `cr update` delegates to npm when Cora was installed from this package.
 
-- `@keton-id/cora-<platform>-<arch>` contains that release's platform
-  binary.
-- `@keton-id/cora` tracks the same release semver and pins each
-  `optionalDependency` to the matching subpackage version.
+The release workflow publishes this package to npmjs.org using GitHub Actions OIDC. Its npm Trusted Publisher is configured for repository `keton-id/cora`, workflow `.github/workflows/release.yml`, and environment `Release`.
 
-The full release process is documented in
-[`RELEASING.md`](https://github.com/keton-id/cora/blob/main/RELEASING.md).
-
-`cr version` reports the subpackage's version (the one actually running on your machine), not the meta version.
-
-Pin a specific build with `@<version>` to keep an environment reproducible:
-
-```sh
-npm i -g @keton-id/cora@1.0.0
-```
-
+The full release process is documented in [`RELEASING.md`](https://github.com/keton-id/cora/blob/main/RELEASING.md).
 
 ## License
 

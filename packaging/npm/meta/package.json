@@ -1,17 +1,21 @@
 {
   "name": "@keton-id/cora",
   "version": "0.0.0-template",
-  "description": "Zero-knowledge secret injection runtime for AI agents. The cr CLI never lets an agent process see secret values — only names; values are decrypted in service memory and injected directly into subprocess env.",
+  "description": "Zero-knowledge secret injection runtime for AI agents. Installs the native Cora CLI for the current operating system.",
   "type": "module",
   "bin": {
     "cr": "bin/cr.js"
   },
   "files": [
     "bin/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "postinstall": "node bin/install.js"
   },
   "license": "AGPL-3.0-only",
   "repository": {
@@ -33,13 +37,5 @@
     "env",
     "argon2",
     "xchacha20"
-  ],
-  "optionalDependencies": {
-    "@keton-id/cora-darwin-x64": "0.0.0-template",
-    "@keton-id/cora-darwin-arm64": "0.0.0-template",
-    "@keton-id/cora-linux-x64": "0.0.0-template",
-    "@keton-id/cora-linux-arm64": "0.0.0-template",
-    "@keton-id/cora-win32-x64": "0.0.0-template",
-    "@keton-id/cora-win32-arm64": "0.0.0-template"
-  }
+  ]
 }

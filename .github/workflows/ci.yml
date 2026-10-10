@@ -34,6 +34,22 @@ jobs:
       - name: zig build test
         run: zig build test --summary all
 
+  npm-package:
+    name: npm package installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node --test tests/npm_install.test.mjs
+      - run: node --check packaging/npm/meta/bin/cr.js
+      - run: node --check packaging/npm/meta/bin/install.js
+
+
   commit-lint:
     name: conventional commits
     runs-on: ubuntu-latest

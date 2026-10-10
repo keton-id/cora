@@ -224,8 +224,8 @@ Cora uses one stable `v<X.Y.Z>` tag for all supported OSes. See
    `.github/workflows/release.yml`.
 4. The release workflow builds macOS, Linux, and Windows for x64 and
    ARM64, publishes one GitHub Release titled `Cora v<X.Y.Z>`, updates
-   Homebrew and Scoop, and publishes the npm launcher and six platform
-   packages.
+   Homebrew and Scoop, and publishes the single npm package
+   `@keton-id/cora`.
 
 All releases are stable. The release workflow rejects prerelease and
 per-OS tag formats.
